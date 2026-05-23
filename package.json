@@ -1,0 +1,47 @@
+{
+  "name": "pi-ward",
+  "version": "0.0.1",
+  "packageManager": "npm@11.12.1",
+  "description": "File access guard for the pi coding agent — declarative filesystem boundaries.",
+  "license": "MIT",
+  "author": "Jonas Damtoft",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jomik/pi-ward.git"
+  },
+  "homepage": "https://github.com/Jomik/pi-ward",
+  "keywords": [
+    "pi",
+    "agent",
+    "security",
+    "filesystem",
+    "sandbox"
+  ],
+  "type": "module",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.12",
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}
