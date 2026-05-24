@@ -142,7 +142,6 @@ Ward config files throughout the ancestor chain are always write-protected. This
 - **Extension crash during rule evaluation:** fail-closed. The tool call is denied.
 - **Invalid pattern syntax:** fail-closed at load time.
 - **Allow rule structurally out of scope:** load-time error (consistent with fail-closed).
-- **Invalid config on `/reload`:** preserves the prior valid config. User is notified that reload failed and which config is still active.
 
 ### Threat Model Scope
 

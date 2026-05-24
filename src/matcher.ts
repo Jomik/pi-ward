@@ -59,6 +59,11 @@ export function matches(pattern: ParsedPattern, configDir: string, absolutePath:
   if (pattern.anchored) return matchesAnchored(pattern, configDir, absolutePath);
 
   // Unanchored: the pattern matches if ANY segment in the absolute path matches.
+  // For unanchored patterns, the `directory` flag has no additional effect at match time.
+  // Both `.secret` and `.secret/` match any path containing a segment that matches the pattern.
+  // The trailing `/` in `.secret/` is syntactic sugar indicating intent (this represents a directory),
+  // but the matching semantics are identical because segment matching inherently covers
+  // both the directory node and paths beneath it.
   const segPattern = pattern.segments[0];
   if (segPattern === undefined) return false;
 
