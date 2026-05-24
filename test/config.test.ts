@@ -15,7 +15,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../src/config.js";
 
@@ -48,7 +48,7 @@ afterEach(async () => {
 
 /** Write a JSON config file, creating parent dirs as needed. */
 async function writeConfig(filePath: string, content: unknown): Promise<void> {
-  await mkdir(join(filePath, ".."), { recursive: true });
+  await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, JSON.stringify(content), "utf-8");
 }
 

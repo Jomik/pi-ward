@@ -1,18 +1,26 @@
 import { isAbsolute, join, relative } from "node:path";
 
 /**
+ * Returns true if `target` is at or below `base` in the directory tree.
+ */
+export function isDescendantOf(base: string, target: string): boolean {
+  const rel = relative(base, target);
+  return !isAbsolute(rel) && !rel.startsWith("..");
+}
+
+/**
  * Compute ancestor directories from `home` toward `target`.
  * Returns an array of directory paths in walk order (home first, target last).
  * If target is not within home, returns an empty array.
  */
 export function ancestorDirs(home: string, target: string): string[] {
-  const homePrefix = home.endsWith("/") ? home : `${home}/`;
-  if (target !== home && !target.startsWith(homePrefix)) {
+  if (!isDescendantOf(home, target)) {
     return [];
   }
 
-  const relPath = target.slice(home.length).replace(/^[/\\]/, "");
-  const segments = relPath === "" ? [] : relPath.split(/[/\\]/).filter((s) => s !== "");
+  const rel = relative(home, target);
+  // rel is "" when home === target, otherwise segments separated by OS sep
+  const segments = rel === "" ? [] : rel.split(/[/\\]/).filter((s) => s !== "");
 
   const dirs: string[] = [home];
   let current = home;
@@ -21,12 +29,4 @@ export function ancestorDirs(home: string, target: string): string[] {
     dirs.push(current);
   }
   return dirs;
-}
-
-/**
- * Returns true if `target` is at or below `base` in the directory tree.
- */
-export function isDescendantOf(base: string, target: string): boolean {
-  const rel = relative(base, target);
-  return !isAbsolute(rel) && !rel.startsWith("..");
 }
