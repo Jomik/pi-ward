@@ -35,6 +35,9 @@
     "format": "biome format --write",
     "test": "vitest run"
   },
+  "dependencies": {
+    "typebox": "^1.1.38"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.74.0"
   },

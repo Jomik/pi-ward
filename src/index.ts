@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { guard } from "./guard.js";
 import type { Operation } from "./rules.js";
 import { getProtectedPaths, resolveProtectedPaths } from "./self-protect.js";
+import { createDeleteTool } from "./tools/delete.js";
 
 /**
  * Extract the guard operation and path list from a tool call event.
@@ -35,6 +36,9 @@ export function extractAccess(
   if (isToolCallEventType("ls", event)) {
     return { operation: "read", paths: [event.input.path ?? projectRoot] };
   }
+  if (isToolCallEventType<"delete", { path: string }>("delete", event)) {
+    return { operation: "write", paths: [event.input.path] };
+  }
   return null;
 }
 
@@ -43,6 +47,8 @@ const factory: ExtensionFactory = async (pi) => {
   const homeDir = await realpath(homedir());
   const { rules } = await loadConfig(projectRoot, homeDir);
   const protectedPaths = await resolveProtectedPaths(getProtectedPaths(projectRoot, homeDir));
+
+  pi.registerTool(createDeleteTool(projectRoot));
 
   pi.on("tool_call", async (event, _ctx) => {
     try {
