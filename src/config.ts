@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parsePattern } from "./pattern.js";
 import type { ParsedRule, Rule } from "./rules.js";
+import { ancestorDirs } from "./walk.js";
 
 export interface WardConfig {
   rules: Rule[];
@@ -55,40 +56,39 @@ function validateConfig(raw: unknown, filePath: string): WardConfig {
     throw new Error(`Config "${filePath}": missing or invalid "rules" array`);
   }
 
-  const rules: Rule[] = [];
-  for (let i = 0; i < obj.rules.length; i++) {
-    const ruleRaw: unknown = obj.rules[i];
-    if (typeof ruleRaw !== "object" || ruleRaw === null || Array.isArray(ruleRaw)) {
-      throw new Error(`Config "${filePath}": rule[${i}] must be an object`);
-    }
-    const r = ruleRaw as Record<string, unknown>;
+  const rules = obj.rules.map((ruleRaw: unknown, i: number) => validateRule(ruleRaw, i, filePath));
+  return { rules };
+}
 
-    if (typeof r.pattern !== "string") {
-      throw new Error(`Config "${filePath}": rule[${i}].pattern must be a string`);
-    }
-    if (r.effect !== "allow" && r.effect !== "deny") {
-      throw new Error(`Config "${filePath}": rule[${i}].effect must be "allow" or "deny"`);
-    }
+function validateRule(ruleRaw: unknown, index: number, filePath: string): Rule {
+  if (typeof ruleRaw !== "object" || ruleRaw === null || Array.isArray(ruleRaw)) {
+    throw new Error(`Config "${filePath}": rule[${index}] must be an object`);
+  }
+  const r = ruleRaw as Record<string, unknown>;
 
-    if (r.operations !== undefined) {
-      if (!Array.isArray(r.operations)) {
-        throw new Error(`Config "${filePath}": rule[${i}].operations must be an array`);
-      }
-      for (const op of r.operations) {
-        if (op !== "read" && op !== "write") {
-          throw new Error(`Config "${filePath}": rule[${i}].operations contains invalid value "${String(op)}"`);
-        }
-      }
-    }
-
-    rules.push({
-      pattern: r.pattern,
-      effect: r.effect,
-      ...(r.operations !== undefined ? { operations: r.operations as ("read" | "write")[] } : {}),
-    });
+  if (typeof r.pattern !== "string") {
+    throw new Error(`Config "${filePath}": rule[${index}].pattern must be a string`);
+  }
+  if (r.effect !== "allow" && r.effect !== "deny") {
+    throw new Error(`Config "${filePath}": rule[${index}].effect must be "allow" or "deny"`);
   }
 
-  return { rules };
+  if (r.operations !== undefined) {
+    if (!Array.isArray(r.operations)) {
+      throw new Error(`Config "${filePath}": rule[${index}].operations must be an array`);
+    }
+    for (const op of r.operations) {
+      if (op !== "read" && op !== "write") {
+        throw new Error(`Config "${filePath}": rule[${index}].operations contains invalid value "${String(op)}"`);
+      }
+    }
+  }
+
+  return {
+    pattern: r.pattern,
+    effect: r.effect,
+    ...(r.operations !== undefined ? { operations: r.operations as ("read" | "write")[] } : {}),
+  };
 }
 
 /**
@@ -147,34 +147,15 @@ export async function loadConfig(projectRoot: string): Promise<LoadResult> {
     allRules.push(...parseConfigRules(globalConfig, home, globalConfigPath));
   }
 
-  // If projectRoot is not within home, skip the walk entirely.
-  const homePrefix = home.endsWith("/") ? home : `${home}/`;
-  const projectInsideHome = projectRoot === home || projectRoot.startsWith(homePrefix);
-  if (!projectInsideHome) {
-    return { rules: allRules };
-  }
-
-  // Compute path segments from home to projectRoot.
-  const relPath = projectRoot.slice(home.length).replace(/^\//, "");
-  const segments = relPath === "" ? [] : relPath.split("/").filter((s) => s !== "");
-
-  // Step 2: walk ancestor directories from home up to (not including) projectRoot.
-  let current = home;
-  for (let i = 0; i < segments.length; i++) {
-    const configPath = join(current, ".pi", "ward.json");
+  // Steps 2+3: walk ancestor directories from home to projectRoot (inclusive).
+  // ancestorDirs returns [] when projectRoot is outside home, so this is a no-op in that case.
+  const dirs = ancestorDirs(home, projectRoot);
+  for (const dir of dirs) {
+    const configPath = join(dir, ".pi", "ward.json");
     const config = await readConfigFile(configPath);
     if (config !== null) {
-      allRules.push(...parseConfigRules(config, current, configPath));
+      allRules.push(...parseConfigRules(config, dir, configPath));
     }
-    current = join(current, segments[i]);
-  }
-  // current === projectRoot at this point
-
-  // Step 3: project root config
-  const projectConfigPath = join(projectRoot, ".pi", "ward.json");
-  const projectConfig = await readConfigFile(projectConfigPath);
-  if (projectConfig !== null) {
-    allRules.push(...parseConfigRules(projectConfig, projectRoot, projectConfigPath));
   }
 
   return { rules: allRules };

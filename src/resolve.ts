@@ -9,6 +9,37 @@ export interface ResolveResult {
 }
 
 /**
+ * Handle the ENOENT case from realpath: distinguish a dangling symlink from a
+ * genuinely absent file (new-file write), then resolve the parent directory.
+ */
+async function resolveNewFile(normalized: string): Promise<ResolveResult> {
+  try {
+    await lstat(normalized);
+    // lstat succeeded but realpath failed — dangling/broken symlink.
+    return { path: normalized, denied: `Broken symlink at "${normalized}"` };
+  } catch (lstatErr) {
+    const lstatCode = (lstatErr as { code?: string }).code;
+    if (lstatCode !== "ENOENT") {
+      // lstat failed for a non-ENOENT reason (e.g. EACCES, ELOOP in path components).
+      return { path: normalized, denied: `Cannot resolve path "${normalized}": ${(lstatErr as Error).message}` };
+    }
+  }
+
+  // File genuinely doesn't exist — attempt to resolve the parent for new-file writes.
+  const parent = dirname(normalized);
+  const base = basename(normalized);
+  try {
+    const realParent = await realpath(parent);
+    return { path: resolve(realParent, base) };
+  } catch (parentErr) {
+    return {
+      path: normalized,
+      denied: `Cannot resolve path "${normalized}": ${(parentErr as Error).message}`,
+    };
+  }
+}
+
+/**
  * Resolve an input path to its real absolute path.
  *
  * - Normalizes the path (resolves relative to projectRoot if not absolute).
@@ -29,37 +60,9 @@ export async function resolvePath(inputPath: string, projectRoot: string): Promi
     return { path: real };
   } catch (err) {
     const code = (err as { code?: string }).code;
-
     if (code === "ENOENT") {
-      // Use lstat to distinguish:
-      //   - lstat succeeds: path exists as a symlink but target is missing (dangling symlink)
-      //   - lstat fails ENOENT: path genuinely doesn't exist (new-file case)
-      try {
-        await lstat(normalized);
-        // lstat succeeded but realpath failed — dangling/broken symlink.
-        return { path: normalized, denied: `Broken symlink at "${normalized}"` };
-      } catch (lstatErr) {
-        const lstatCode = (lstatErr as { code?: string }).code;
-        if (lstatCode === "ENOENT") {
-          // File genuinely doesn't exist — attempt to resolve the parent for new-file writes.
-          const parent = dirname(normalized);
-          const base = basename(normalized);
-          try {
-            const realParent = await realpath(parent);
-            return { path: resolve(realParent, base) };
-          } catch (parentErr) {
-            return {
-              path: normalized,
-              denied: `Cannot resolve path "${normalized}": ${(parentErr as Error).message}`,
-            };
-          }
-        }
-        // lstat failed for a non-ENOENT reason (e.g. EACCES, ELOOP in path components).
-        return { path: normalized, denied: `Cannot resolve path "${normalized}": ${(lstatErr as Error).message}` };
-      }
+      return resolveNewFile(normalized);
     }
-
-    // Fail-closed for all other errors (EACCES, ELOOP, ENOTDIR, etc.).
     return { path: normalized, denied: `Cannot resolve path "${normalized}": ${(err as Error).message}` };
   }
 }

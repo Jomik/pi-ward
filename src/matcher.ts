@@ -2,29 +2,30 @@ import { relative } from "node:path";
 import type { ParsedPattern, SegmentPattern } from "./pattern.js";
 
 function matchesSegment(pattern: SegmentPattern, segment: string): boolean {
+  const seg = segment.toLowerCase();
   switch (pattern.kind) {
     case "literal":
-      return segment.toLowerCase() === pattern.value.toLowerCase();
+      return seg === pattern.value.toLowerCase();
 
     case "prefix":
       // segment must start with prefix and have at least 1 more char (for the `*`)
-      return segment.toLowerCase().startsWith(pattern.prefix.toLowerCase()) && segment.length > pattern.prefix.length;
+      return seg.startsWith(pattern.prefix.toLowerCase()) && seg.length > pattern.prefix.length;
 
     case "suffix":
       // segment must end with suffix and have at least 1 more char (for the `*`)
-      return segment.toLowerCase().endsWith(pattern.suffix.toLowerCase()) && segment.length > pattern.suffix.length;
+      return seg.endsWith(pattern.suffix.toLowerCase()) && seg.length > pattern.suffix.length;
 
     case "both":
       // segment must start with prefix, end with suffix, with at least 1 char in between
       return (
-        segment.toLowerCase().startsWith(pattern.prefix.toLowerCase()) &&
-        segment.toLowerCase().endsWith(pattern.suffix.toLowerCase()) &&
-        segment.length > pattern.prefix.length + pattern.suffix.length
+        seg.startsWith(pattern.prefix.toLowerCase()) &&
+        seg.endsWith(pattern.suffix.toLowerCase()) &&
+        seg.length > pattern.prefix.length + pattern.suffix.length
       );
 
     case "wildcard":
       // `*` matches one or more characters — any non-empty segment
-      return segment.length > 0;
+      return seg.length > 0;
   }
 }
 
@@ -51,22 +52,15 @@ export function matches(pattern: ParsedPattern, configDir: string, absolutePath:
       return true;
     }
 
+    // Directory: path must have >= N segments with first N matching.
+    // Non-directory: path must have exactly N segments, all matching.
     if (pattern.directory) {
-      // The relative path must have at least as many segments as the pattern,
-      // and the first N must match.
       if (relSegments.length < pattern.segments.length) return false;
-      return pattern.segments.every((seg, i) => {
-        const relSeg = relSegments[i];
-        return relSeg !== undefined && matchesSegment(seg, relSeg);
-      });
+    } else {
+      if (relSegments.length !== pattern.segments.length) return false;
     }
 
-    // Non-directory anchored: relative path must have exactly N segments, all matching.
-    if (relSegments.length !== pattern.segments.length) return false;
-    return pattern.segments.every((seg, i) => {
-      const relSeg = relSegments[i];
-      return relSeg !== undefined && matchesSegment(seg, relSeg);
-    });
+    return pattern.segments.every((seg, i) => matchesSegment(seg, relSegments[i]));
   }
 
   // Unanchored: the pattern matches if ANY segment in the absolute path matches.
