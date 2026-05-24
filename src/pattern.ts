@@ -103,6 +103,9 @@ export function parsePattern(raw: string): ParsedPattern {
   if (raw.includes("{")) {
     throw new Error(`Invalid pattern: braces are not supported: "${raw}"`);
   }
+  if (raw.includes("}")) {
+    throw new Error(`Invalid pattern: braces are not supported: "${raw}"`);
+  }
 
   const anchored = raw.startsWith("./");
   const directory = raw.endsWith("/");

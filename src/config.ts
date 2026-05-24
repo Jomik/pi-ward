@@ -143,8 +143,8 @@ function parseConfigRules(config: WardConfig, configDir: string, filePath: strin
  *
  * ENOENT on any config file is silently skipped. Any other error fails closed.
  */
-export async function loadConfig(projectRoot: string): Promise<LoadResult> {
-  const home = homedir();
+export async function loadConfig(projectRoot: string, homeDir?: string): Promise<LoadResult> {
+  const home = homeDir ?? homedir();
   const allRules: ParsedRule[] = [];
 
   // Step 1: global config — always attempted

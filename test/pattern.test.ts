@@ -90,6 +90,10 @@ describe("parsePattern", () => {
       expect(() => parsePattern("{a,b}")).toThrow();
     });
 
+    it("throws for 'foo}' (closing brace without opening)", () => {
+      expect(() => parsePattern("foo}")).toThrow();
+    });
+
     it("throws for empty pattern", () => {
       expect(() => parsePattern("")).toThrow();
     });

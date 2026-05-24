@@ -35,7 +35,7 @@ function matchesAnchored(pattern: ParsedPattern, configDir: string, absolutePath
   if (!isDescendantOf(configDir, absolutePath)) return false;
 
   // Segments of the relative path; empty array when absolutePath === configDir
-  const relSegments = rel === "" ? [] : rel.split("/").filter((s) => s !== "" && s !== ".");
+  const relSegments = rel === "" ? [] : rel.split(/[/\\]/).filter((s) => s !== "" && s !== ".");
 
   if (pattern.segments.length === 0) return true;
 
@@ -67,6 +67,6 @@ export function matches(pattern: ParsedPattern, configDir: string, absolutePath:
   const segPattern = pattern.segments[0];
   if (segPattern === undefined) return false;
 
-  const segments = absolutePath.split("/").filter((s) => s !== "");
+  const segments = absolutePath.split(/[/\\]/).filter((s) => s !== "");
   return segments.some((seg) => matchesSegment(segPattern, seg));
 }

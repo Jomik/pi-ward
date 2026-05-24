@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -27,6 +28,22 @@ export function getProtectedPaths(projectRoot: string, homeDir?: string): string
   }
 
   return paths;
+}
+
+/**
+ * Resolves each protected path via realpath.
+ * On ENOENT (path doesn't exist yet), keeps the constructed path as a fallback.
+ */
+export async function resolveProtectedPaths(paths: string[]): Promise<string[]> {
+  const resolved: string[] = [];
+  for (const p of paths) {
+    try {
+      resolved.push(await realpath(p));
+    } catch {
+      resolved.push(p);
+    }
+  }
+  return resolved;
 }
 
 /**

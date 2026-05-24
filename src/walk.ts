@@ -1,4 +1,4 @@
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 
 /**
  * Compute ancestor directories from `home` toward `target`.
@@ -11,8 +11,8 @@ export function ancestorDirs(home: string, target: string): string[] {
     return [];
   }
 
-  const relPath = target.slice(home.length).replace(/^\//, "");
-  const segments = relPath === "" ? [] : relPath.split("/").filter((s) => s !== "");
+  const relPath = target.slice(home.length).replace(/^[/\\]/, "");
+  const segments = relPath === "" ? [] : relPath.split(/[/\\]/).filter((s) => s !== "");
 
   const dirs: string[] = [home];
   let current = home;
@@ -27,5 +27,6 @@ export function ancestorDirs(home: string, target: string): string[] {
  * Returns true if `target` is at or below `base` in the directory tree.
  */
 export function isDescendantOf(base: string, target: string): boolean {
-  return !relative(base, target).startsWith("..");
+  const rel = relative(base, target);
+  return !isAbsolute(rel) && !rel.startsWith("..");
 }

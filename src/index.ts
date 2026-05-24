@@ -5,7 +5,7 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./config.js";
 import { guard } from "./guard.js";
 import type { Operation } from "./rules.js";
-import { getProtectedPaths } from "./self-protect.js";
+import { getProtectedPaths, resolveProtectedPaths } from "./self-protect.js";
 
 /**
  * Extract the guard operation and path list from a tool call event.
@@ -41,8 +41,8 @@ export function extractAccess(
 const factory: ExtensionFactory = async (pi) => {
   const projectRoot = await realpath(process.cwd());
   const homeDir = await realpath(homedir());
-  const { rules } = await loadConfig(projectRoot);
-  const protectedPaths = getProtectedPaths(projectRoot, homeDir);
+  const { rules } = await loadConfig(projectRoot, homeDir);
+  const protectedPaths = await resolveProtectedPaths(getProtectedPaths(projectRoot, homeDir));
 
   pi.on("tool_call", async (event, _ctx) => {
     try {
