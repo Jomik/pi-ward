@@ -4,21 +4,21 @@ import type { ParsedPattern, SegmentPattern } from "./pattern.js";
 function matchesSegment(pattern: SegmentPattern, segment: string): boolean {
   switch (pattern.kind) {
     case "literal":
-      return segment === pattern.value;
+      return segment.toLowerCase() === pattern.value.toLowerCase();
 
     case "prefix":
       // segment must start with prefix and have at least 1 more char (for the `*`)
-      return segment.startsWith(pattern.prefix) && segment.length > pattern.prefix.length;
+      return segment.toLowerCase().startsWith(pattern.prefix.toLowerCase()) && segment.length > pattern.prefix.length;
 
     case "suffix":
       // segment must end with suffix and have at least 1 more char (for the `*`)
-      return segment.endsWith(pattern.suffix) && segment.length > pattern.suffix.length;
+      return segment.toLowerCase().endsWith(pattern.suffix.toLowerCase()) && segment.length > pattern.suffix.length;
 
     case "both":
       // segment must start with prefix, end with suffix, with at least 1 char in between
       return (
-        segment.startsWith(pattern.prefix) &&
-        segment.endsWith(pattern.suffix) &&
+        segment.toLowerCase().startsWith(pattern.prefix.toLowerCase()) &&
+        segment.toLowerCase().endsWith(pattern.suffix.toLowerCase()) &&
         segment.length > pattern.prefix.length + pattern.suffix.length
       );
 

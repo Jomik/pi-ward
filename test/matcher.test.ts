@@ -189,3 +189,35 @@ describe("matches — additional edge cases", () => {
     expect(m(".git/", "/project/.git/refs/heads/main")).toBe(true);
   });
 });
+
+describe("matches — case-insensitive matching", () => {
+  describe("`.env` literal matches uppercase/mixed-case", () => {
+    it("matches .ENV", () => {
+      expect(m(".env", "/base/.ENV")).toBe(true);
+    });
+
+    it("matches .Env", () => {
+      expect(m(".env", "/base/.Env")).toBe(true);
+    });
+  });
+
+  describe("`*.pem` suffix wildcard matches uppercase/mixed-case", () => {
+    it("matches CERT.PEM", () => {
+      expect(m("*.pem", "/base/CERT.PEM")).toBe(true);
+    });
+
+    it("matches cert.PEM", () => {
+      expect(m("*.pem", "/base/cert.PEM")).toBe(true);
+    });
+  });
+
+  describe("`.env*` prefix wildcard matches uppercase/mixed-case", () => {
+    it("matches .ENV.local", () => {
+      expect(m(".env*", "/base/.ENV.local")).toBe(true);
+    });
+
+    it("matches .Env.Production", () => {
+      expect(m(".env*", "/base/.Env.Production")).toBe(true);
+    });
+  });
+});
