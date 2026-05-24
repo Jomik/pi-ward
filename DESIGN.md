@@ -83,12 +83,13 @@ The walk does not extend above the home directory. Sessions with a project root 
 Rules are concatenated in load order (global first, project last) into a single flat list. First match wins — global rules always take precedence.
 
 **Why global wins:** This inverts the "most-specific-wins" convention familiar from gitconfig or eslint. The inversion is deliberate: a security boundary must not allow untrusted inner configs to weaken trusted outer configs. Global rules are set by the user; project configs may come from cloned repos.
+The global config's scope is the home directory — it can allow access anywhere at or below `~`.
 
 **Trust scoping:** A config can only `allow` access to paths at or below the directory it governs. This is enforced at match time: when a rule matches and its effect is `allow`, the resolved absolute path must be at or below the config's directory for the allow to take effect. If not, the rule is skipped and evaluation continues to the next rule.
 
 A config can `deny` any path regardless of scope.
 
-- Global config can allow or deny anything.
+- Global config can `allow` within the home directory tree, and `deny` any path.
 - `~/projects/private/.pi/ward.json` can allow access within `~/projects/private/`.
 - A leaf project config can only allow within its own tree (which the baseline already grants).
 - An `allow` rule that can never take effect (pattern structurally references outside the config's scope) is a load-time error.
@@ -123,7 +124,7 @@ Before matching, all paths are resolved:
 - Paths are normalized and resolved to absolute form.
 - Symlinks are resolved to their real path before matching — no symlink escapes.
 - Broken symlinks (dangling, unresolvable) are denied.
-- Matching is case-insensitive on case-insensitive filesystems.
+- Matching is case-insensitive.
 
 ### Self-Protection
 
@@ -141,7 +142,6 @@ Ward config files throughout the ancestor chain are always write-protected. This
 - **Extension crash during rule evaluation:** fail-closed. The tool call is denied.
 - **Invalid pattern syntax:** fail-closed at load time.
 - **Allow rule structurally out of scope:** load-time error (consistent with fail-closed).
-- **Invalid config on `/reload`:** preserves the prior valid config. User is notified that reload failed and which config is still active.
 
 ### Threat Model Scope
 
