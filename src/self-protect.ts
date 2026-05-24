@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { ancestorDirs } from "./walk.js";
 
 /**
@@ -16,7 +17,7 @@ export function getProtectedPaths(projectRoot: string, homeDir?: string): string
   const home = homeDir ?? homedir();
 
   // Global config is always protected.
-  const paths = [join(home, ".pi", "agent", "ward.json")];
+  const paths = [join(getAgentDir(), "ward.json")];
 
   // Walk ancestor directories from home to projectRoot (mirrors loadConfig walk).
   // ancestorDirs returns [] when projectRoot is outside home, so this is a no-op in that case.

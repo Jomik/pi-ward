@@ -9,17 +9,24 @@ vi.mock("node:os", async (importOriginal) => {
   };
 });
 
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+  getAgentDir: vi.fn(),
+}));
+
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getProtectedPaths, isSelfProtected } from "../src/self-protect.js";
 
 const mockHomedir = vi.mocked(homedir);
+const mockGetAgentDir = vi.mocked(getAgentDir);
 
 const testHome = "/mock/home";
 const testProject = join(testHome, "projects", "myproject");
 
 beforeEach(() => {
   mockHomedir.mockReturnValue(testHome);
+  mockGetAgentDir.mockReturnValue(join(testHome, ".pi", "agent"));
 });
 
 afterEach(() => {

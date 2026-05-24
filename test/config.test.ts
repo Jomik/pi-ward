@@ -9,12 +9,18 @@ vi.mock("node:os", async (importOriginal) => {
   };
 });
 
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+  getAgentDir: vi.fn(),
+}));
+
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../src/config.js";
 
 const mockHomedir = vi.mocked(homedir);
+const mockGetAgentDir = vi.mocked(getAgentDir);
 
 // ---------------------------------------------------------------------------
 // Temp directory helpers
@@ -33,6 +39,7 @@ beforeEach(async () => {
   await mkdir(join(testProject, ".pi"), { recursive: true });
 
   mockHomedir.mockReturnValue(testHome);
+  mockGetAgentDir.mockReturnValue(join(testHome, ".pi", "agent"));
 });
 
 afterEach(async () => {

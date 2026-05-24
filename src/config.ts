@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { parsePattern } from "./pattern.js";
 import type { ParsedRule, Rule } from "./rules.js";
 import { ancestorDirs } from "./walk.js";
@@ -147,7 +148,7 @@ export async function loadConfig(projectRoot: string): Promise<LoadResult> {
   const allRules: ParsedRule[] = [];
 
   // Step 1: global config — always attempted
-  const globalConfigPath = join(home, ".pi", "agent", "ward.json");
+  const globalConfigPath = join(getAgentDir(), "ward.json");
   const globalConfig = await readConfigFile(globalConfigPath);
   if (globalConfig !== null) {
     allRules.push(...parseConfigRules(globalConfig, home, globalConfigPath));
