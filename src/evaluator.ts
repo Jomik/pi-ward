@@ -1,6 +1,7 @@
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute } from "node:path";
 import { matches } from "./matcher.js";
 import type { Effect, Operation, ParsedRule } from "./rules.js";
+import { isDescendantOf } from "./walk.js";
 
 /**
  * Evaluate access rules for a given operation on an absolute path.
@@ -35,8 +36,7 @@ export function evaluate(rules: ParsedRule[], operation: Operation, absolutePath
 
     // 3. Trust scoping: allow rules are only effective within the config's directory.
     if (rule.effect === "allow") {
-      const rel = relative(rule.configDir, absolutePath);
-      if (rel.startsWith("..")) {
+      if (!isDescendantOf(rule.configDir, absolutePath)) {
         // Path is outside the config's directory — skip this allow rule.
         continue;
       }
@@ -46,6 +46,5 @@ export function evaluate(rules: ParsedRule[], operation: Operation, absolutePath
   }
 
   // Baseline policy.
-  const rel = relative(projectRoot, absolutePath);
-  return rel.startsWith("..") ? "deny" : "allow";
+  return isDescendantOf(projectRoot, absolutePath) ? "allow" : "deny";
 }

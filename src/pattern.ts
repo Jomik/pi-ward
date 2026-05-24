@@ -63,6 +63,27 @@ function parseSegmentPattern(seg: string, rawPattern: string): SegmentPattern {
   throw new Error(`Invalid pattern: multiple wildcards in a single segment are not supported: "${rawPattern}"`);
 }
 
+function parseAnchored(body: string, directory: boolean, raw: string): ParsedPattern {
+  if (body === "") {
+    return { anchored: true, directory: true, segments: [] };
+  }
+  const segments = body.split("/").map((part) => parseSegmentPattern(part, raw));
+  return { anchored: true, directory, segments };
+}
+
+function parseUnanchored(body: string, directory: boolean, raw: string): ParsedPattern {
+  if (body === "") {
+    throw new Error(`Invalid pattern: empty pattern "${raw}"`);
+  }
+  if (body.includes("/")) {
+    throw new Error(
+      `Invalid pattern: unanchored pattern cannot contain "/": "${raw}". Use a "./" prefix for multi-segment patterns.`,
+    );
+  }
+  const segment = parseSegmentPattern(body, raw);
+  return { anchored: false, directory, segments: [segment] };
+}
+
 /**
  * Parse a pattern string into a structured ParsedPattern.
  *
@@ -86,31 +107,9 @@ export function parsePattern(raw: string): ParsedPattern {
   const anchored = raw.startsWith("./");
   const directory = raw.endsWith("/");
 
-  let body = raw;
-  if (anchored) body = body.slice(2);
-  if (directory) body = body.slice(0, -1);
+  let inner = raw;
+  if (anchored) inner = inner.slice(2);
+  if (directory) inner = inner.slice(0, -1);
 
-  if (anchored) {
-    if (body === "") {
-      // "./" alone — everything at or below the config dir
-      return { anchored: true, directory: true, segments: [] };
-    }
-
-    const parts = body.split("/");
-    const segments = parts.map((part) => parseSegmentPattern(part, raw));
-    return { anchored: true, directory, segments };
-  }
-
-  // Unanchored
-  if (body === "") {
-    throw new Error(`Invalid pattern: empty pattern "${raw}"`);
-  }
-  if (body.includes("/")) {
-    throw new Error(
-      `Invalid pattern: unanchored pattern cannot contain "/": "${raw}". Use a "./" prefix for multi-segment patterns.`,
-    );
-  }
-
-  const segment = parseSegmentPattern(body, raw);
-  return { anchored: false, directory, segments: [segment] };
+  return anchored ? parseAnchored(inner, directory, raw) : parseUnanchored(inner, directory, raw);
 }

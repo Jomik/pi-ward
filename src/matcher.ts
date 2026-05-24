@@ -1,5 +1,6 @@
 import { relative } from "node:path";
 import type { ParsedPattern, SegmentPattern } from "./pattern.js";
+import { isDescendantOf } from "./walk.js";
 
 function matchesSegment(pattern: SegmentPattern, segment: string): boolean {
   const seg = segment.toLowerCase();
@@ -29,6 +30,23 @@ function matchesSegment(pattern: SegmentPattern, segment: string): boolean {
   }
 }
 
+function matchesAnchored(pattern: ParsedPattern, configDir: string, absolutePath: string): boolean {
+  const rel = relative(configDir, absolutePath);
+  if (!isDescendantOf(configDir, absolutePath)) return false;
+
+  // Segments of the relative path; empty array when absolutePath === configDir
+  const relSegments = rel === "" ? [] : rel.split("/").filter((s) => s !== "" && s !== ".");
+
+  if (pattern.segments.length === 0) return true;
+
+  const lengthOk = pattern.directory
+    ? relSegments.length >= pattern.segments.length
+    : relSegments.length === pattern.segments.length;
+  if (!lengthOk) return false;
+
+  return pattern.segments.every((seg, i) => matchesSegment(seg, relSegments[i]));
+}
+
 /**
  * Determine whether an absolute path matches a parsed pattern.
  *
@@ -38,30 +56,7 @@ function matchesSegment(pattern: SegmentPattern, segment: string): boolean {
  * @param absolutePath - The absolute path to test.
  */
 export function matches(pattern: ParsedPattern, configDir: string, absolutePath: string): boolean {
-  if (pattern.anchored) {
-    const rel = relative(configDir, absolutePath);
-
-    // Path is outside (or a sibling of) the config directory
-    if (rel.startsWith("..")) return false;
-
-    // Segments of the relative path; empty array when absolutePath === configDir
-    const relSegments = rel === "" ? [] : rel.split("/").filter((s) => s !== "" && s !== ".");
-
-    if (pattern.segments.length === 0) {
-      // "./" alone — everything at or below the config dir
-      return true;
-    }
-
-    // Directory: path must have >= N segments with first N matching.
-    // Non-directory: path must have exactly N segments, all matching.
-    if (pattern.directory) {
-      if (relSegments.length < pattern.segments.length) return false;
-    } else {
-      if (relSegments.length !== pattern.segments.length) return false;
-    }
-
-    return pattern.segments.every((seg, i) => matchesSegment(seg, relSegments[i]));
-  }
+  if (pattern.anchored) return matchesAnchored(pattern, configDir, absolutePath);
 
   // Unanchored: the pattern matches if ANY segment in the absolute path matches.
   const segPattern = pattern.segments[0];

@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 /**
  * Compute ancestor directories from `home` toward `target`.
@@ -21,4 +21,11 @@ export function ancestorDirs(home: string, target: string): string[] {
     dirs.push(current);
   }
   return dirs;
+}
+
+/**
+ * Returns true if `target` is at or below `base` in the directory tree.
+ */
+export function isDescendantOf(base: string, target: string): boolean {
+  return !relative(base, target).startsWith("..");
 }

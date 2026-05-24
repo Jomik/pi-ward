@@ -13,7 +13,7 @@ import { getProtectedPaths } from "./self-protect.js";
  * Returns `{ operation, paths }` for tools that require access checks, or
  * `null` for tools that should be ignored (e.g. bash).
  */
-export function extractDispatch(
+export function extractAccess(
   event: ToolCallEvent,
   projectRoot: string,
 ): { operation: Operation; paths: string[] } | null {
@@ -46,7 +46,7 @@ const factory: ExtensionFactory = async (pi) => {
 
   pi.on("tool_call", async (event, _ctx) => {
     try {
-      const dispatch = extractDispatch(event, projectRoot);
+      const dispatch = extractAccess(event, projectRoot);
       if (dispatch === null) {
         return undefined;
       }

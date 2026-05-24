@@ -60,6 +60,18 @@ function validateConfig(raw: unknown, filePath: string): WardConfig {
   return { rules };
 }
 
+function validateOperations(operations: unknown, index: number, filePath: string): ("read" | "write")[] {
+  if (!Array.isArray(operations)) {
+    throw new Error(`Config "${filePath}": rule[${index}].operations must be an array`);
+  }
+  for (const op of operations) {
+    if (op !== "read" && op !== "write") {
+      throw new Error(`Config "${filePath}": rule[${index}].operations contains invalid value "${String(op)}"`);
+    }
+  }
+  return operations as ("read" | "write")[];
+}
+
 function validateRule(ruleRaw: unknown, index: number, filePath: string): Rule {
   if (typeof ruleRaw !== "object" || ruleRaw === null || Array.isArray(ruleRaw)) {
     throw new Error(`Config "${filePath}": rule[${index}] must be an object`);
@@ -73,21 +85,15 @@ function validateRule(ruleRaw: unknown, index: number, filePath: string): Rule {
     throw new Error(`Config "${filePath}": rule[${index}].effect must be "allow" or "deny"`);
   }
 
+  let operations: ("read" | "write")[] | undefined;
   if (r.operations !== undefined) {
-    if (!Array.isArray(r.operations)) {
-      throw new Error(`Config "${filePath}": rule[${index}].operations must be an array`);
-    }
-    for (const op of r.operations) {
-      if (op !== "read" && op !== "write") {
-        throw new Error(`Config "${filePath}": rule[${index}].operations contains invalid value "${String(op)}"`);
-      }
-    }
+    operations = validateOperations(r.operations, index, filePath);
   }
 
   return {
     pattern: r.pattern,
     effect: r.effect,
-    ...(r.operations !== undefined ? { operations: r.operations as ("read" | "write")[] } : {}),
+    ...(operations !== undefined ? { operations } : {}),
   };
 }
 
