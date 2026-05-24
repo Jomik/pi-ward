@@ -11,7 +11,7 @@ import { isSelfProtected } from "./self-protect.js";
  * message on the first path that fails.
  */
 export async function guard(
-  _toolName: string,
+  toolName: string,
   paths: string[],
   operation: Operation,
   rules: ParsedRule[],
@@ -24,14 +24,14 @@ export async function guard(
     if (resolved.denied) {
       return {
         allowed: false,
-        reason: `[pi-ward] Blocked ${operation} on ${inputPath}: ${resolved.denied}`,
+        reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: ${resolved.denied}`,
       };
     }
 
     if (operation === "write" && isSelfProtected(resolved.path, protectedPaths)) {
       return {
         allowed: false,
-        reason: `[pi-ward] Blocked ${operation} on ${inputPath}: Cannot modify ward config file: ${resolved.path}`,
+        reason: `[pi-ward] Blocked ${toolName} (write) on ${inputPath}: ward config file is write-protected`,
       };
     }
 
@@ -39,7 +39,7 @@ export async function guard(
     if (effect === "deny") {
       return {
         allowed: false,
-        reason: `[pi-ward] Blocked ${operation} on ${inputPath}: Access denied: ${operation} ${inputPath}`,
+        reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by policy`,
       };
     }
   }

@@ -177,6 +177,53 @@ describe("broken symlink", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tool name variants (grep, find)
+// ---------------------------------------------------------------------------
+
+describe("toolName variants", () => {
+  it("guard with toolName 'grep' and operation 'read' allows access within project root", async () => {
+    const file = join(projectRoot, "src", "main.ts");
+    await mkdir(join(projectRoot, "src"), { recursive: true });
+    await writeFile(file, "");
+
+    const result = await guard("grep", [file], "read", [], projectRoot, []);
+
+    expect(result.allowed).toBe(true);
+  });
+
+  it("guard with toolName 'grep' and operation 'read' blocks access outside project root", async () => {
+    const file = join(outsideDir, "secret.txt");
+    await writeFile(file, "secret");
+
+    const result = await guard("grep", [file], "read", [], projectRoot, []);
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toMatch(/\[pi-ward\]/);
+      expect(result.reason).toContain("grep");
+      expect(result.reason).toContain("read");
+    }
+  });
+
+  it("guard with toolName 'find' and operation 'read' allows access within project root", async () => {
+    const result = await guard("find", [projectRoot], "read", [], projectRoot, []);
+
+    expect(result.allowed).toBe(true);
+  });
+
+  it("guard with toolName 'find' and operation 'read' blocks access outside project root", async () => {
+    const result = await guard("find", [outsideDir], "read", [], projectRoot, []);
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toMatch(/\[pi-ward\]/);
+      expect(result.reason).toContain("find");
+      expect(result.reason).toContain("read");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Multiple paths
 // ---------------------------------------------------------------------------
 

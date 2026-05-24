@@ -11,8 +11,8 @@ import { join } from "node:path";
  *
  * If projectRoot is outside homedir, only the global config path is returned.
  */
-export function getProtectedPaths(projectRoot: string): string[] {
-  const home = homedir();
+export function getProtectedPaths(projectRoot: string, homeDir?: string): string[] {
+  const home = homeDir ?? homedir();
   const paths: string[] = [];
 
   // Global config is always protected.
