@@ -89,7 +89,7 @@ The global config's scope is the home directory — it can allow access anywhere
 
 A config can `deny` any path regardless of scope.
 
-- Global config can allow or deny anything within the home directory tree.
+- Global config can `allow` within the home directory tree, and `deny` any path.
 - `~/projects/private/.pi/ward.json` can allow access within `~/projects/private/`.
 - A leaf project config can only allow within its own tree (which the baseline already grants).
 - An `allow` rule that can never take effect (pattern structurally references outside the config's scope) is a load-time error.

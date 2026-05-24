@@ -9,8 +9,7 @@ import { ancestorDirs } from "./walk.js";
  *
  * Protected paths (mirrors the loadConfig walk order):
  * - `~/.pi/agent/ward.json` (global config, always protected)
- * - `<dir>/.pi/ward.json` for each ancestor directory from homedir down to projectRoot
- * - `<projectRoot>/.pi/ward.json`
+ * - `<dir>/.pi/ward.json` for each directory from homedir to projectRoot (inclusive)
  *
  * If projectRoot is outside homedir, only the global config path is returned.
  */
@@ -32,7 +31,8 @@ export function getProtectedPaths(projectRoot: string, homeDir?: string): string
 
 /**
  * Resolves each protected path via realpath.
- * On ENOENT (path doesn't exist yet), keeps the constructed path as a fallback.
+ * On any error (ENOENT, EACCES, etc.), keeps the constructed path as a fallback
+ * so the path remains protected even when unresolvable.
  */
 export async function resolveProtectedPaths(paths: string[]): Promise<string[]> {
   const resolved: string[] = [];
