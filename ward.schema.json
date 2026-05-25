@@ -23,19 +23,16 @@
             "type": "string"
           },
           "operations": {
-            "type": "array",
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "const": "read"
-                },
-                {
-                  "type": "string",
-                  "const": "write"
-                }
-              ]
-            }
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "read"
+              },
+              {
+                "type": "string",
+                "const": "write"
+              }
+            ]
           },
           "effect": {
             "anyOf": [

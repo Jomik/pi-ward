@@ -43,11 +43,22 @@ Example `.pi/ward.json`:
   "rules": [
     { "pattern": ".env*", "effect": "deny" },
     { "pattern": "*.pem", "effect": "deny" },
-    { "pattern": ".git/", "operations": ["write"], "effect": "deny" },
+    { "pattern": ".git/", "operations": "write", "effect": "deny" },
     { "pattern": ".secret/", "effect": "deny" }
   ]
 }
 ```
+
+### Operations
+
+The `operations` field controls the access level a rule grants or restricts. It defaults to `"read"` (restrictive).
+
+| effect | operations | Result |
+|--------|------------|--------|
+| `allow` | `"read"` (default) | Grants read access only |
+| `allow` | `"write"` | Grants full access (read + write) |
+| `deny` | `"read"` (default) | Denies all access |
+| `deny` | `"write"` | Denies writes only (read-only) |
 
 Rules are evaluated top-to-bottom, first match wins. See [DESIGN.md](./DESIGN.md) for pattern syntax, trust scoping, and the full specification.
 
