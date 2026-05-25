@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Jomik/pi-ward/ward.schema.json",
+  "title": "Ward Config",
+  "type": "object",
+  "required": [
+    "rules"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "pattern",
+          "effect"
+        ],
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "read"
+                },
+                {
+                  "type": "string",
+                  "const": "write"
+                }
+              ]
+            }
+          },
+          "effect": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "allow"
+              },
+              {
+                "type": "string",
+                "const": "deny"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

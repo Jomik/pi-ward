@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { Value } from "typebox/value";
 import { parsePattern } from "./pattern.js";
 import type { ParsedRule, Rule } from "./rules.js";
+import { WardConfigSchema } from "./schema.js";
 import { ancestorDirs } from "./walk.js";
 
 export interface WardConfig {
@@ -43,59 +45,16 @@ async function readConfigFile(filePath: string): Promise<WardConfig | null> {
 }
 
 /**
- * Validate the raw parsed JSON against the expected WardConfig schema.
+ * Validate the raw parsed JSON against WardConfigSchema.
  * Throws with a descriptive message (including file path) on any schema violation.
  */
 function validateConfig(raw: unknown, filePath: string): WardConfig {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new Error(`Config "${filePath}": must be a JSON object`);
+  if (!Value.Check(WardConfigSchema, raw)) {
+    const errors = Value.Errors(WardConfigSchema, raw);
+    const first = errors[0];
+    throw new Error(`Config "${filePath}": ${first.instancePath}: ${first.message}`);
   }
-
-  const obj = raw as Record<string, unknown>;
-
-  if (!Array.isArray(obj.rules)) {
-    throw new Error(`Config "${filePath}": missing or invalid "rules" array`);
-  }
-
-  const rules = obj.rules.map((ruleRaw: unknown, i: number) => validateRule(ruleRaw, i, filePath));
-  return { rules };
-}
-
-function validateOperations(operations: unknown, index: number, filePath: string): ("read" | "write")[] {
-  if (!Array.isArray(operations)) {
-    throw new Error(`Config "${filePath}": rule[${index}].operations must be an array`);
-  }
-  for (const op of operations) {
-    if (op !== "read" && op !== "write") {
-      throw new Error(`Config "${filePath}": rule[${index}].operations contains invalid value "${String(op)}"`);
-    }
-  }
-  return operations as ("read" | "write")[];
-}
-
-function validateRule(ruleRaw: unknown, index: number, filePath: string): Rule {
-  if (typeof ruleRaw !== "object" || ruleRaw === null || Array.isArray(ruleRaw)) {
-    throw new Error(`Config "${filePath}": rule[${index}] must be an object`);
-  }
-  const r = ruleRaw as Record<string, unknown>;
-
-  if (typeof r.pattern !== "string") {
-    throw new Error(`Config "${filePath}": rule[${index}].pattern must be a string`);
-  }
-  if (r.effect !== "allow" && r.effect !== "deny") {
-    throw new Error(`Config "${filePath}": rule[${index}].effect must be "allow" or "deny"`);
-  }
-
-  let operations: ("read" | "write")[] | undefined;
-  if (r.operations !== undefined) {
-    operations = validateOperations(r.operations, index, filePath);
-  }
-
-  return {
-    pattern: r.pattern,
-    effect: r.effect,
-    ...(operations !== undefined ? { operations } : {}),
-  };
+  return { rules: raw.rules };
 }
 
 /**

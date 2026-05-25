@@ -22,6 +22,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Schema up-to-date
+        run: npm run generate:schema && git diff --exit-code ward.schema.json
+
       - name: Lint
         run: npm run lint
 
