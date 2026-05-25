@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { rm, rmdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -14,7 +14,16 @@ export function createDeleteTool(projectRoot: string) {
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const target = resolve(projectRoot, params.path);
       try {
-        await rm(target);
+        try {
+          await rm(target);
+        } catch (rmErr: unknown) {
+          const code = rmErr instanceof Error ? (rmErr as NodeJS.ErrnoException).code : undefined;
+          if (code === "EISDIR" || code === "ERR_FS_EISDIR") {
+            await rmdir(target);
+          } else {
+            throw rmErr;
+          }
+        }
         return {
           content: [{ type: "text" as const, text: `Deleted: ${target}` }],
           details: undefined,
