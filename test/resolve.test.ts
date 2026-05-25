@@ -94,12 +94,59 @@ describe("non-existent file (new file case)", () => {
 });
 
 describe("non-existent parent directory", () => {
-  it("returns denied when the parent directory doesn't exist", async () => {
+  it("resolves to ancestor + remaining segments when intermediate dirs don't exist", async () => {
     const newFile = join(projectRoot, "ghost-dir", "file.txt");
 
     const result = await resolvePath(newFile, projectRoot);
 
-    expect(result.denied).toBeDefined();
+    expect(result.denied).toBeUndefined();
+    expect(result.path).toBe(newFile);
+  });
+
+  it("resolves deeply nested non-existent paths", async () => {
+    const newFile = join(projectRoot, "a", "b", "c", "file.txt");
+
+    const result = await resolvePath(newFile, projectRoot);
+
+    expect(result.denied).toBeUndefined();
+    expect(result.path).toBe(newFile);
+  });
+
+  it("resolves through symlinked ancestor to reveal real path", async () => {
+    // outside/ is a real dir; project/link -> outside
+    const outsideDir = join(tempDir, "outside");
+    await mkdir(outsideDir);
+    const linkInProject = join(projectRoot, "link");
+    await symlink(outsideDir, linkInProject);
+
+    // Write to link/new-dir/file.txt — "new-dir" doesn't exist,
+    // but "link" does and is a symlink. Should resolve through it.
+    const newFile = join(projectRoot, "link", "new-dir", "file.txt");
+    const result = await resolvePath(newFile, projectRoot);
+
+    expect(result.denied).toBeUndefined();
+    // The resolved path should go through the symlink target, not the link itself.
+    expect(result.path).toBe(join(outsideDir, "new-dir", "file.txt"));
+  });
+});
+
+describe("dot-dot normalization", () => {
+  it("normalizes .. in absolute paths before walk-up", async () => {
+    // An absolute path with .. that would escape the project if not normalized
+    const malicious = `${projectRoot}/ghost/../../outside/file.txt`;
+
+    const result = await resolvePath(malicious, projectRoot);
+
+    // resolve() normalizes .. away, so the resolved path stays correct
+    expect(result.denied).toBeUndefined();
+    expect(result.path).toBe(join(tempDir, "outside", "file.txt"));
+  });
+
+  it("normalizes .. in relative paths before walk-up", async () => {
+    const result = await resolvePath("ghost/../other/file.txt", projectRoot);
+
+    expect(result.denied).toBeUndefined();
+    expect(result.path).toBe(join(projectRoot, "other", "file.txt"));
   });
 });
 
