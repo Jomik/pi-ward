@@ -33,7 +33,8 @@
     "lint": "biome check",
     "lint:fix": "biome check --write",
     "format": "biome format --write",
-    "test": "vitest run"
+    "test": "vitest run",
+    "generate:schema": "node scripts/generate-schema.ts"
   },
   "dependencies": {
     "typebox": "^1.1.38"
