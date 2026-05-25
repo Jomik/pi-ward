@@ -54,9 +54,17 @@ function matchesAnchored(pattern: ParsedPattern, configDir: string, absolutePath
  * @param configDir - Absolute path to the directory the config governs
  *                    (used for anchored patterns).
  * @param absolutePath - The absolute path to test.
+ * @param homeDir   - Absolute path to the user's home directory
+ *                    (used for home-anchored patterns).
  */
-export function matches(pattern: ParsedPattern, configDir: string, absolutePath: string): boolean {
+export function matches(pattern: ParsedPattern, configDir: string, absolutePath: string, homeDir?: string): boolean {
   if (pattern.anchored) return matchesAnchored(pattern, configDir, absolutePath);
+  if (pattern.homeAnchored) {
+    if (homeDir === undefined) {
+      throw new Error("matches: homeDir is required for home-anchored patterns");
+    }
+    return matchesAnchored(pattern, homeDir, absolutePath);
+  }
 
   // Unanchored: the pattern matches if ANY segment in the absolute path matches.
   // For unanchored patterns, the `directory` flag has no additional effect at match time.

@@ -70,13 +70,16 @@ Minimal pattern syntax:
 | `./` | Everything at or below the config's directory | (used in group-level configs to allow sibling access) |
 | `./.secret/` | `./` anchors to the config's directory | `.secret/x` ✓, `foo/.secret/x` ✗ |
 | `./src/*.ts` | `*` works within any segment in an anchored path | `src/index.ts` ✓, `src/lib/foo.ts` ✗ |
+| `~/.ssh/` | `~/` anchors to the home directory (absolute) | `~/.ssh/id_rsa` ✓, `/tmp/.ssh/key` ✗ |
+| `~/.pi/agent/skills/` | Home-anchored directory match | `~/.pi/agent/skills/design/SKILL.md` ✓ |
 
 Rules:
 - **No prefix** — unanchored. Must be a single-segment pattern. Matches against every segment in the path.
-- **`./`** — anchored to the directory the config governs (parent of the `.pi/` directory containing the config). Can include path separators.
+- **`./`** — anchored to the directory the config governs (parent of the `.pi/` directory containing the config). Can include path separators. **Not valid in the global config** (there is no governing directory).
+- **`~/`** — anchored to the home directory. The home path is captured at config load time and used for matching. Can include path separators. Useful in the global config for targeting specific paths.
 - **Trailing `/`** — directory match: the directory node itself and everything under it.
 - **`*`** — wildcard within a single segment (does not cross `/`). Matches one or more characters. Prefix (`foo*`), suffix (`*.ext`), or both (`foo*.ext`).
-- Unanchored patterns containing `/` are invalid (syntax error). Use `./` to write multi-segment patterns.
+- Unanchored patterns containing `/` are invalid (syntax error). Use `./` or `~/` to write multi-segment patterns.
 - No `**`, no braces, no extglobs, no regex. Complexity is the enemy of a security boundary.
 - Invalid pattern syntax is a load-time error.
 
@@ -97,14 +100,29 @@ Rules are concatenated in load order (global first, project last) into a single 
 **Why global wins:** This inverts the "most-specific-wins" convention familiar from gitconfig or eslint. The inversion is deliberate: a security boundary must not allow untrusted inner configs to weaken trusted outer configs. Global rules are set by the user; project configs may come from cloned repos.
 The global config's scope is the home directory — it can allow access anywhere at or below `~`.
 
-**Trust scoping:** A config can only `allow` access to paths at or below the directory it governs. This is enforced at match time: when a rule matches and its effect is `allow`, the resolved absolute path must be at or below the config's directory for the allow to take effect. If not, the rule is skipped and evaluation continues to the next rule.
+**Trust scoping:** A config can only `allow` access to paths at or below the directory it governs. This is enforced at match time: when a rule matches and its effect is `allow`, the resolved absolute path must be at or below the config's trust scope for the allow to take effect. If not, the rule is skipped and evaluation continues to the next rule.
 
 A config can `deny` any path regardless of scope.
 
-- Global config can `allow` within the home directory tree, and `deny` any path.
+- Global config's trust scope is the home directory — it can `allow` within `~`, and `deny` any path.
 - `~/projects/private/.pi/ward.json` can allow access within `~/projects/private/`.
 - A leaf project config can only allow within its own tree (which the baseline already grants).
 - An `allow` rule that can never take effect (pattern structurally references outside the config's scope) is a load-time error.
+- `./` patterns are rejected in the global config at load time (use `~/` or unanchored patterns instead).
+
+Example `~/.pi/agent/ward.json` (global config):
+```json
+{
+  "rules": [
+    { "pattern": "~/.pi/agent/skills/", "effect": "allow" },
+    { "pattern": ".env*", "effect": "deny" },
+    { "pattern": "*.pem", "effect": "deny" },
+    { "pattern": "~/.ssh/", "effect": "deny" }
+  ]
+}
+```
+
+This says: allow reading the skills directory from any project, deny `.env*` and `*.pem` everywhere, deny `~/.ssh`.
 
 Example `~/projects/private/.pi/ward.json` (group level):
 ```json
@@ -121,8 +139,6 @@ Example project-level `.pi/ward.json`:
 ```json
 {
   "rules": [
-    { "pattern": ".env*", "effect": "deny" },
-    { "pattern": "*.pem", "effect": "deny" },
     { "pattern": ".git/", "operations": "write", "effect": "deny" },
     { "pattern": ".secret/", "effect": "deny" }
   ]

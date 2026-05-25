@@ -316,4 +316,150 @@ describe("anchored allow pattern with ../", () => {
 
     await expect(loadConfig(testProject)).resolves.toBeDefined();
   });
+
+  it("throws when a home-anchored allow rule has '..' as first segment", async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/../etc", effect: "allow" }]));
+
+    await expect(loadConfig(testProject)).rejects.toThrow(/can never match within the home directory/);
+  });
+
+  it("deny rule with home-anchored .. pattern does not throw", async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/../etc", effect: "deny" }]));
+
+    await expect(loadConfig(testProject)).resolves.toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// homeDir stored on rules
+// ---------------------------------------------------------------------------
+
+describe("homeDir stored on ParsedRule", () => {
+  it("rules carry homeDir from the resolved home directory", async () => {
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), cfg([{ pattern: ".env*", effect: "deny" }]));
+
+    const result = await loadConfig(testProject, testHome);
+
+    expect(result.rules[0].homeDir).toBe(testHome);
+  });
+
+  it("project config rules also carry homeDir", async () => {
+    await writeConfig(join(testProject, ".pi", "ward.json"), cfg([{ pattern: ".env*", effect: "deny" }]));
+
+    const result = await loadConfig(testProject, testHome);
+
+    expect(result.rules[0].homeDir).toBe(testHome);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Global config rejects "./"-anchored patterns
+// ---------------------------------------------------------------------------
+
+describe('global config rejects "./"-anchored patterns', () => {
+  it('throws when global config contains a "./"-anchored pattern', async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "./src/", effect: "deny" }]));
+
+    await expect(loadConfig(testProject)).rejects.toThrow(/".\/src\/".*not allowed in the global config/);
+  });
+
+  it('throws for any rule index in global config with "./" pattern', async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(
+      configPath,
+      cfg([
+        { pattern: ".env*", effect: "deny" },
+        { pattern: "./secrets", effect: "deny" },
+      ]),
+    );
+
+    await expect(loadConfig(testProject)).rejects.toThrow(/rule\[1\]/);
+  });
+
+  it('does not throw when global config uses "~/" instead of "./"', async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/.ssh/", effect: "deny" }]));
+
+    await expect(loadConfig(testProject)).resolves.toBeDefined();
+  });
+
+  it('allows "./"-anchored patterns in non-global configs', async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "./src/", effect: "deny" }]));
+
+    await expect(loadConfig(testProject)).resolves.toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Home-anchored patterns in config
+// ---------------------------------------------------------------------------
+
+describe("home-anchored patterns in config", () => {
+  it("parses a ~/  pattern into homeAnchored: true", async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/.ssh/", effect: "deny" }]));
+
+    const result = await loadConfig(testProject, testHome);
+
+    expect(result.rules[0].pattern.homeAnchored).toBe(true);
+    expect(result.rules[0].pattern.anchored).toBe(false);
+  });
+
+  it("home-anchored pattern can appear in a project config", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/notes/", effect: "deny" }]));
+
+    const result = await loadConfig(testProject, testHome);
+
+    expect(result.rules[0].pattern.homeAnchored).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Home-anchored patterns — homeDir field and ~/ loading
+// ---------------------------------------------------------------------------
+
+describe("home-anchored patterns — homeDir field and ~/ loading", () => {
+  it("loaded rules from global config have homeDir field set to homedir()", async () => {
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), cfg([{ pattern: "~/.ssh/", effect: "deny" }]));
+
+    const result = await loadConfig(testProject);
+
+    expect(result.rules).toHaveLength(1);
+    expect(result.rules[0].homeDir).toBe(testHome);
+  });
+
+  it("loaded rules from non-global configs also have homeDir field set", async () => {
+    await writeConfig(join(testProject, ".pi", "ward.json"), cfg([{ pattern: ".env*", effect: "deny" }]));
+
+    const result = await loadConfig(testProject);
+
+    expect(result.rules).toHaveLength(1);
+    expect(result.rules[0].homeDir).toBe(testHome);
+  });
+
+  it("parses a ~/ pattern into homeAnchored: true", async () => {
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), cfg([{ pattern: "~/.ssh/", effect: "deny" }]));
+
+    const result = await loadConfig(testProject);
+
+    expect(result.rules[0].pattern.homeAnchored).toBe(true);
+    expect(result.rules[0].pattern.anchored).toBe(false);
+  });
+
+  it("non-global (project) config with ~/ pattern loads successfully", async () => {
+    await writeConfig(join(testProject, ".pi", "ward.json"), cfg([{ pattern: "~/.ssh/", effect: "deny" }]));
+
+    await expect(loadConfig(testProject)).resolves.toBeDefined();
+  });
+
+  it("non-global (ancestor) config with ~/ pattern loads successfully", async () => {
+    await writeConfig(join(testHome, ".pi", "ward.json"), cfg([{ pattern: "~/.config/", effect: "deny" }]));
+
+    await expect(loadConfig(testProject)).resolves.toBeDefined();
+  });
 });

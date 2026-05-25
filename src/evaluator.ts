@@ -48,7 +48,7 @@ export function evaluate(rules: ParsedRule[], operation: Operation, absolutePath
     if (!ruleApplies(rule.effect, rule.operations, operation)) continue;
 
     // 2. Path must match the pattern.
-    if (!matches(rule.pattern, rule.configDir, absolutePath)) continue;
+    if (!matches(rule.pattern, rule.configDir, absolutePath, rule.homeDir)) continue;
 
     // 3. Trust scoping: allow rules are only effective within the config's directory.
     if (rule.effect === "allow") {

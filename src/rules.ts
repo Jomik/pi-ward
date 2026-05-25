@@ -16,4 +16,6 @@ export interface ParsedRule {
   effect: Effect;
   /** Absolute path to the directory this rule's config governs. */
   configDir: string;
+  /** Absolute path to the user's home directory (used for home-anchored patterns). */
+  homeDir: string;
 }
