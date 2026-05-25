@@ -52,6 +52,9 @@ function validateConfig(raw: unknown, filePath: string): WardConfig {
   if (!Value.Check(WardConfigSchema, raw)) {
     const errors = Value.Errors(WardConfigSchema, raw);
     const first = errors[0];
+    if (first === undefined) {
+      throw new Error(`Config "${filePath}": schema validation failed`);
+    }
     throw new Error(`Config "${filePath}": ${first.instancePath}: ${first.message}`);
   }
   return { rules: raw.rules };
@@ -59,25 +62,49 @@ function validateConfig(raw: unknown, filePath: string): WardConfig {
 
 /**
  * Parse validated rules into ParsedRules, attaching configDir and checking
- * for allow rules that can structurally never match within the config's directory.
+ * for allow rules that can structurally never match within their scope.
  *
  * Throws if:
  * - parsePattern throws (invalid syntax)
- * - An allow rule has an anchored pattern whose first segment is ".." (escapes config dir)
+ * - An allow rule has a "./"-anchored pattern starting with ".." (escapes config dir)
+ * - An allow rule has a "~/"-home-anchored pattern starting with ".." (escapes home dir)
+ * - isGlobal is true and a rule uses a "./"-anchored pattern
  */
-function parseConfigRules(config: WardConfig, configDir: string, filePath: string): ParsedRule[] {
+function parseConfigRules(
+  config: WardConfig,
+  configDir: string,
+  filePath: string,
+  homeDir: string,
+  isGlobal = false,
+): ParsedRule[] {
   return config.rules.map((rule, i) => {
     const parsedPattern = parsePattern(rule.pattern);
 
-    // Load-time trust check: an anchored allow pattern starting with ".." can never
-    // match within the config's directory.
-    if (rule.effect === "allow" && parsedPattern.anchored && parsedPattern.segments.length > 0) {
+    // Global config disallows "./"-anchored patterns (no sensible "current directory").
+    if (isGlobal && parsedPattern.anchored) {
+      throw new Error(
+        `Config "${filePath}": rule[${i}]: "./"-anchored pattern "${rule.pattern}" is not allowed in the global config. ` +
+          `Use "~/" for home-relative paths or unanchored patterns.`,
+      );
+    }
+
+    // Load-time trust check: a "./"-anchored or "~/"-home-anchored allow pattern
+    // starting with ".." can never match within its respective scope.
+    if (rule.effect === "allow" && parsedPattern.segments.length > 0) {
       const firstSeg = parsedPattern.segments[0];
       if (firstSeg.kind === "literal" && firstSeg.value === "..") {
-        throw new Error(
-          `Config "${filePath}": rule[${i}]: allow rule with pattern "${rule.pattern}" ` +
-            `can never match within the config directory "${configDir}"`,
-        );
+        if (parsedPattern.anchored) {
+          throw new Error(
+            `Config "${filePath}": rule[${i}]: allow rule with pattern "${rule.pattern}" ` +
+              `can never match within the config directory "${configDir}"`,
+          );
+        }
+        if (parsedPattern.homeAnchored) {
+          throw new Error(
+            `Config "${filePath}": rule[${i}]: allow rule with pattern "${rule.pattern}" ` +
+              `can never match within the home directory "${homeDir}"`,
+          );
+        }
       }
     }
 
@@ -86,6 +113,7 @@ function parseConfigRules(config: WardConfig, configDir: string, filePath: strin
       operations: rule.operations ?? "read",
       effect: rule.effect,
       configDir,
+      homeDir,
     };
   });
 }
@@ -110,7 +138,7 @@ export async function loadConfig(projectRoot: string, homeDir?: string): Promise
   const globalConfigPath = join(getAgentDir(), "ward.json");
   const globalConfig = await readConfigFile(globalConfigPath);
   if (globalConfig !== null) {
-    allRules.push(...parseConfigRules(globalConfig, home, globalConfigPath));
+    allRules.push(...parseConfigRules(globalConfig, home, globalConfigPath, home, true));
   }
 
   // Steps 2+3: walk ancestor directories from home to projectRoot (inclusive).
@@ -120,7 +148,7 @@ export async function loadConfig(projectRoot: string, homeDir?: string): Promise
     const configPath = join(dir, ".pi", "ward.json");
     const config = await readConfigFile(configPath);
     if (config !== null) {
-      allRules.push(...parseConfigRules(config, dir, configPath));
+      allRules.push(...parseConfigRules(config, dir, configPath, home));
     }
   }
 

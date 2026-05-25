@@ -15,13 +15,17 @@ export type SegmentPattern =
 export interface ParsedPattern {
   /** True if the pattern starts with "./" (anchored to the config directory). */
   readonly anchored: boolean;
+  /** True if the pattern starts with "~/" (anchored to the home directory). */
+  readonly homeAnchored: boolean;
   /** True if the pattern ends with "/" (directory match). */
   readonly directory: boolean;
   /**
    * Segment patterns.
    * - Unanchored: always one element.
-   * - Anchored with empty array: matches everything at/below the config dir (`./`).
-   * - Anchored non-empty: each element corresponds to a path segment relative to the config dir.
+   * - `./`-anchored with empty array: matches everything at/below the config dir.
+   * - `~/`-home-anchored with empty array: matches everything at/below the home dir.
+   * - `./`-anchored or `~/`-home-anchored non-empty: each element corresponds to a path segment
+   *   relative to the respective anchor directory.
    */
   readonly segments: ReadonlyArray<SegmentPattern>;
 }
@@ -65,10 +69,18 @@ function parseSegmentPattern(seg: string, rawPattern: string): SegmentPattern {
 
 function parseAnchored(body: string, directory: boolean, raw: string): ParsedPattern {
   if (body === "") {
-    return { anchored: true, directory: true, segments: [] };
+    return { anchored: true, homeAnchored: false, directory, segments: [] };
   }
   const segments = body.split("/").map((part) => parseSegmentPattern(part, raw));
-  return { anchored: true, directory, segments };
+  return { anchored: true, homeAnchored: false, directory, segments };
+}
+
+function parseHomeAnchored(body: string, directory: boolean, raw: string): ParsedPattern {
+  if (body === "") {
+    return { anchored: false, homeAnchored: true, directory, segments: [] };
+  }
+  const segments = body.split("/").map((part) => parseSegmentPattern(part, raw));
+  return { anchored: false, homeAnchored: true, directory, segments };
 }
 
 function parseUnanchored(body: string, directory: boolean, raw: string): ParsedPattern {
@@ -77,11 +89,11 @@ function parseUnanchored(body: string, directory: boolean, raw: string): ParsedP
   }
   if (body.includes("/")) {
     throw new Error(
-      `Invalid pattern: unanchored pattern cannot contain "/": "${raw}". Use a "./" prefix for multi-segment patterns.`,
+      `Invalid pattern: unanchored pattern cannot contain "/": "${raw}". Use "./" or "~/" prefix for multi-segment patterns.`,
     );
   }
   const segment = parseSegmentPattern(body, raw);
-  return { anchored: false, directory, segments: [segment] };
+  return { anchored: false, homeAnchored: false, directory, segments: [segment] };
 }
 
 /**
@@ -90,6 +102,7 @@ function parseUnanchored(body: string, directory: boolean, raw: string): ParsedP
  * Syntax rules:
  * - No prefix → unanchored single-segment pattern. Must not contain `/`.
  * - `./` prefix → anchored to the config directory. May contain `/`.
+ * - `~/` prefix → anchored to the home directory. May contain `/`.
  * - Trailing `/` → directory match (the node itself and everything under it).
  * - `*` → matches one or more characters within a segment (not `/`).
  * - No `**`, braces, extglobs, or regex.
@@ -108,11 +121,26 @@ export function parsePattern(raw: string): ParsedPattern {
   }
 
   const anchored = raw.startsWith("./");
+  const homeAnchored = !anchored && raw.startsWith("~/");
   const directory = raw.endsWith("/");
 
+  // Catch bare `~` or `~foo` — likely a typo for `~/` or `~/foo`.
+  if (!anchored && !homeAnchored && raw.startsWith("~")) {
+    throw new Error(
+      `Invalid pattern: "${raw}" starts with "~" but is not home-anchored. Did you mean "~/${raw.slice(1)}"?`,
+    );
+  }
+
   let inner = raw;
-  if (anchored) inner = inner.slice(2);
+  if (anchored || homeAnchored) inner = inner.slice(2);
   if (directory) inner = inner.slice(0, -1);
 
-  return anchored ? parseAnchored(inner, directory, raw) : parseUnanchored(inner, directory, raw);
+  // Reject patterns like "~//" or ".//" that normalize to empty but aren't the canonical "~/" or "./".
+  if ((anchored || homeAnchored) && inner === "" && raw !== "./" && raw !== "~/") {
+    throw new Error(`Invalid pattern: "${raw}" is not a valid pattern. Did you mean "${raw.slice(0, 2)}"?`);
+  }
+
+  if (anchored) return parseAnchored(inner, directory, raw);
+  if (homeAnchored) return parseHomeAnchored(inner, directory, raw);
+  return parseUnanchored(inner, directory, raw);
 }

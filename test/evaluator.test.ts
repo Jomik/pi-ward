@@ -6,12 +6,19 @@ import type { ParsedRule } from "../src/rules.js";
 const PROJECT_ROOT = "/home/user/project";
 
 /** Build a ParsedRule conveniently. */
-function rule(pattern: string, effect: "allow" | "deny", configDir: string, operations?: "read" | "write"): ParsedRule {
+function rule(
+  pattern: string,
+  effect: "allow" | "deny",
+  configDir: string,
+  operations?: "read" | "write",
+  homeDir?: string,
+): ParsedRule {
   return {
     pattern: parsePattern(pattern),
     operations: operations ?? "read",
     effect,
     configDir,
+    homeDir: homeDir ?? configDir,
   };
 }
 
@@ -161,5 +168,44 @@ describe("trust scoping", () => {
     // A deny from any config dir can block any path.
     const rules: ParsedRule[] = [rule("passwd", "deny", PROJECT_ROOT)];
     expect(evaluate(rules, "read", "/etc/passwd", PROJECT_ROOT)).toBe("deny");
+    // Also verify with path inside projectRoot to isolate rule from baseline
+    const insideRules: ParsedRule[] = [rule("index.ts", "deny", PROJECT_ROOT)];
+    expect(evaluate(insideRules, "read", `${PROJECT_ROOT}/index.ts`, PROJECT_ROOT)).toBe("deny");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Home-anchored patterns
+// ---------------------------------------------------------------------------
+
+describe("home-anchored patterns", () => {
+  const HOME_DIR = "/home/user";
+
+  it("home-anchored allow rule from global config (configDir = HOME_DIR) allows path within home", () => {
+    // configDir = HOME_DIR, homeDir = HOME_DIR → trust scope is HOME_DIR, pattern anchored to HOME_DIR
+    const rules: ParsedRule[] = [rule("~/.ssh/", "allow", HOME_DIR, "read", HOME_DIR)];
+    expect(evaluate(rules, "read", `${HOME_DIR}/.ssh/id_rsa`, PROJECT_ROOT)).toBe("allow");
+  });
+
+  it("home-anchored allow rule from project config is trust-scoped to configDir, not to home", () => {
+    // configDir = PROJECT_ROOT, homeDir = HOME_DIR
+    // ~/.ssh/id_rsa is in homeDir but not within PROJECT_ROOT → trust scope blocks the allow
+    const rules: ParsedRule[] = [rule("~/.ssh/", "allow", PROJECT_ROOT, "read", HOME_DIR)];
+    expect(evaluate(rules, "read", `${HOME_DIR}/.ssh/id_rsa`, PROJECT_ROOT)).toBe("deny");
+  });
+
+  it("home-anchored deny rule works regardless of scope", () => {
+    // Deny rules are not trust-scoped; PROJECT_ROOT config can deny a path in HOME_DIR
+    const rules: ParsedRule[] = [rule("~/.ssh/", "deny", PROJECT_ROOT, "read", HOME_DIR)];
+    expect(evaluate(rules, "read", `${HOME_DIR}/.ssh/id_rsa`, PROJECT_ROOT)).toBe("deny");
+  });
+
+  it("home-anchored allow from group config passes when path is within both homeDir and configDir", () => {
+    // Group config at ~/projects (configDir = /home/user/projects)
+    // Pattern: ~/projects/shared/ (resolves to /home/user/projects/shared/)
+    // Path: /home/user/projects/shared/lib.ts — within configDir AND matches pattern
+    const groupConfigDir = "/home/user/projects";
+    const rules: ParsedRule[] = [rule("~/projects/shared/", "allow", groupConfigDir, "read", HOME_DIR)];
+    expect(evaluate(rules, "read", `${groupConfigDir}/shared/lib.ts`, PROJECT_ROOT)).toBe("allow");
   });
 });

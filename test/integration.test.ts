@@ -29,12 +29,14 @@ function makeRule(
   effect: "allow" | "deny",
   configDir: string,
   operations?: "read" | "write",
+  homeDir?: string,
 ): ParsedRule {
   return {
     pattern: parsePattern(pattern),
     operations: operations ?? "read",
     effect,
     configDir,
+    homeDir: homeDir ?? configDir,
   };
 }
 
@@ -264,5 +266,43 @@ describe("multiple paths", () => {
       // Reason should reference the outside path
       expect(result.reason).toContain(outside);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Home-anchored allow rule
+// ---------------------------------------------------------------------------
+
+describe("rule: home-anchored allow read within home", () => {
+  it("allows read of file in homeDir subdir when a home-anchored allow rule permits it", async () => {
+    // Build a home directory structure under the test temp dir
+    const homeDir = join(tempDir, "home");
+    const sshDir = join(homeDir, ".ssh");
+    await mkdir(sshDir, { recursive: true });
+    const keyFile = join(sshDir, "id_rsa");
+    await writeFile(keyFile, "PRIVATE KEY");
+
+    // Global-style rule: configDir = homeDir, homeDir = homeDir
+    // The home-anchored pattern ~/ .ssh/ resolves to homeDir/.ssh/
+    const rules: ParsedRule[] = [makeRule("~/.ssh/", "allow", homeDir, "read", homeDir)];
+
+    const result = await guard("read", [keyFile], "read", rules, projectRoot, []);
+
+    expect(result.allowed).toBe(true);
+  });
+
+  it("does not allow read of file outside homeDir even with home-anchored allow rule", async () => {
+    const homeDir = join(tempDir, "home");
+    await mkdir(homeDir, { recursive: true });
+
+    // outsideDir is outside homeDir
+    const secretFile = join(outsideDir, "secret.txt");
+    await writeFile(secretFile, "secret");
+
+    const rules: ParsedRule[] = [makeRule("~/.ssh/", "allow", homeDir, "read", homeDir)];
+
+    const result = await guard("read", [secretFile], "read", rules, projectRoot, []);
+
+    expect(result.allowed).toBe(false);
   });
 });

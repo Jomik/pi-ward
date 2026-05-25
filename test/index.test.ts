@@ -44,6 +44,16 @@ describe("extractAccess", () => {
   });
 
   // -------------------------------------------------------------------------
+  // delete
+  // -------------------------------------------------------------------------
+
+  it("maps 'delete' to operation='write' with the provided path", () => {
+    const path = join(projectRoot, "old-file.txt");
+    const result = extractAccess(makeEvent("delete", { path }), projectRoot);
+    expect(result).toEqual({ operation: "write", paths: [path] });
+  });
+
+  // -------------------------------------------------------------------------
   // grep
   // -------------------------------------------------------------------------
 

@@ -20,7 +20,19 @@
         ],
         "properties": {
           "pattern": {
-            "type": "string"
+            "type": "string",
+            "description": "Path pattern to match. No prefix = unanchored segment match (e.g. `.env`, `*.pem`); `./` = anchored to the config directory; `~/` = anchored to the home directory; trailing `/` = directory match (the node itself and everything under it); `*` = wildcard matching one or more characters within a single segment.",
+            "examples": [
+              ".env",
+              "*.pem",
+              ".env*",
+              ".secret/",
+              "./",
+              "./src/*.ts",
+              "~/",
+              "~/.ssh/",
+              "~/.config/"
+            ]
           },
           "operations": {
             "anyOf": [
