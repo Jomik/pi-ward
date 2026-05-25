@@ -6,15 +6,10 @@ import type { ParsedRule } from "../src/rules.js";
 const PROJECT_ROOT = "/home/user/project";
 
 /** Build a ParsedRule conveniently. */
-function rule(
-  pattern: string,
-  effect: "allow" | "deny",
-  configDir: string,
-  operations?: ("read" | "write")[],
-): ParsedRule {
+function rule(pattern: string, effect: "allow" | "deny", configDir: string, operations?: "read" | "write"): ParsedRule {
   return {
     pattern: parsePattern(pattern),
-    operations: operations ?? ["read", "write"],
+    operations: operations ?? "read",
     effect,
     configDir,
   };
@@ -63,39 +58,54 @@ describe("first-match-wins", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Operation filtering
+// Operation semantics — "write implies read"
 // ---------------------------------------------------------------------------
 
-describe("operation filtering", () => {
-  it("write-only rule does not match a read operation", () => {
-    const rules: ParsedRule[] = [rule("./", "deny", PROJECT_ROOT, ["write"])];
-    expect(evaluate(rules, "read", `${PROJECT_ROOT}/src/index.ts`, PROJECT_ROOT)).toBe("allow");
+describe("operation semantics", () => {
+  // allow + "read": covers only reads
+  it("allow+read covers a read operation", () => {
+    // Path outside project (baseline deny) — rule must be the deciding factor
+    const rules: ParsedRule[] = [rule("./", "allow", "/home/user", "read")];
+    expect(evaluate(rules, "read", "/home/user/other/file.ts", PROJECT_ROOT)).toBe("allow");
   });
 
-  it("read-only rule does not match a write operation", () => {
-    const rules: ParsedRule[] = [rule("./", "deny", PROJECT_ROOT, ["read"])];
-    expect(evaluate(rules, "write", `${PROJECT_ROOT}/src/index.ts`, PROJECT_ROOT)).toBe("allow");
+  it("allow+read does NOT cover a write operation", () => {
+    // Path outside project (baseline deny). allow+read doesn't apply for write → deny.
+    const rules: ParsedRule[] = [rule("./", "allow", "/home/user", "read")];
+    expect(evaluate(rules, "write", "/home/user/other/file.ts", PROJECT_ROOT)).toBe("deny");
   });
 
-  it("write-only rule does match a write operation", () => {
-    const rules: ParsedRule[] = [rule("./", "deny", PROJECT_ROOT, ["write"])];
+  // allow + "write": covers both reads and writes
+  it("allow+write covers a read operation", () => {
+    const rules: ParsedRule[] = [rule("./", "allow", "/home/user", "write")];
+    expect(evaluate(rules, "read", "/home/user/other/file.ts", PROJECT_ROOT)).toBe("allow");
+  });
+
+  it("allow+write covers a write operation", () => {
+    const rules: ParsedRule[] = [rule("./", "allow", "/home/user", "write")];
+    expect(evaluate(rules, "write", "/home/user/other/file.ts", PROJECT_ROOT)).toBe("allow");
+  });
+
+  // deny + "read": covers both reads and writes
+  it("deny+read covers a read operation", () => {
+    const rules: ParsedRule[] = [rule("./", "deny", PROJECT_ROOT, "read")];
+    expect(evaluate(rules, "read", `${PROJECT_ROOT}/src/index.ts`, PROJECT_ROOT)).toBe("deny");
+  });
+
+  it("deny+read also covers a write operation", () => {
+    const rules: ParsedRule[] = [rule("./", "deny", PROJECT_ROOT, "read")];
     expect(evaluate(rules, "write", `${PROJECT_ROOT}/src/index.ts`, PROJECT_ROOT)).toBe("deny");
   });
-});
 
-// ---------------------------------------------------------------------------
-// Default operations (rule with no operations specified)
-// ---------------------------------------------------------------------------
-
-describe("default operations", () => {
-  it("rule with both operations matches read", () => {
-    const rules: ParsedRule[] = [rule(".env*", "deny", PROJECT_ROOT, ["read", "write"])];
-    expect(evaluate(rules, "read", `${PROJECT_ROOT}/.env.local`, PROJECT_ROOT)).toBe("deny");
+  // deny + "write": covers only writes
+  it("deny+write covers a write operation", () => {
+    const rules: ParsedRule[] = [rule("./", "deny", PROJECT_ROOT, "write")];
+    expect(evaluate(rules, "write", `${PROJECT_ROOT}/src/index.ts`, PROJECT_ROOT)).toBe("deny");
   });
 
-  it("rule with both operations matches write", () => {
-    const rules: ParsedRule[] = [rule(".env*", "deny", PROJECT_ROOT, ["read", "write"])];
-    expect(evaluate(rules, "write", `${PROJECT_ROOT}/.env.local`, PROJECT_ROOT)).toBe("deny");
+  it("deny+write does NOT cover a read operation", () => {
+    const rules: ParsedRule[] = [rule("./", "deny", PROJECT_ROOT, "write")];
+    expect(evaluate(rules, "read", `${PROJECT_ROOT}/src/index.ts`, PROJECT_ROOT)).toBe("allow");
   });
 });
 
@@ -105,27 +115,27 @@ describe("default operations", () => {
 
 describe("trust scoping", () => {
   it("project config allow rule works within project", () => {
-    const rules: ParsedRule[] = [rule(".env*", "allow", PROJECT_ROOT)];
+    const rules: ParsedRule[] = [rule(".env*", "allow", PROJECT_ROOT, "read")];
     expect(evaluate(rules, "read", `${PROJECT_ROOT}/.env.local`, PROJECT_ROOT)).toBe("allow");
   });
 
   it("project config allow rule is skipped for paths outside its configDir", () => {
     // Rule's configDir is the project root, but the pattern could unanchored-match
     // something outside. The trust check prevents it.
-    const rules: ParsedRule[] = [rule(".env*", "allow", PROJECT_ROOT)];
+    const rules: ParsedRule[] = [rule(".env*", "allow", PROJECT_ROOT, "read")];
     // Path is outside the project (and outside configDir)
     expect(evaluate(rules, "read", "/home/user/.env.local", PROJECT_ROOT)).toBe("deny");
   });
 
   it("project config allow for outside path falls through to baseline deny", () => {
     // Unanchored pattern can match outside — but trust scoping skips the allow.
-    const rules: ParsedRule[] = [rule("secrets", "allow", PROJECT_ROOT)];
+    const rules: ParsedRule[] = [rule("secrets", "allow", PROJECT_ROOT, "read")];
     expect(evaluate(rules, "read", "/home/user/secrets", PROJECT_ROOT)).toBe("deny");
   });
 
   it("global config allow (configDir = ~) works for any path", () => {
     const home = "/home/user";
-    const rules: ParsedRule[] = [rule("./", "allow", home)];
+    const rules: ParsedRule[] = [rule("./", "allow", home, "write")];
     // Path is at ~/other-project/file.ts — within ~
     expect(evaluate(rules, "read", `${home}/other-project/file.ts`, PROJECT_ROOT)).toBe("allow");
   });
@@ -133,7 +143,7 @@ describe("trust scoping", () => {
   it("global config allow does not apply for paths outside its own configDir", () => {
     // If configDir is /home/user, a path at /etc is outside → skipped.
     const home = "/home/user";
-    const rules: ParsedRule[] = [rule("./", "allow", home)];
+    const rules: ParsedRule[] = [rule("./", "allow", home, "write")];
     expect(evaluate(rules, "read", "/etc/passwd", PROJECT_ROOT)).toBe("deny");
   });
 
@@ -142,8 +152,8 @@ describe("trust scoping", () => {
     expect(evaluate(rules, "read", "/home/user/.ssh/id_rsa", PROJECT_ROOT)).toBe("deny");
   });
 
-  it("deny rule works regardless of scope — from project config, denies inside path", () => {
-    const rules: ParsedRule[] = [rule(".git/", "deny", PROJECT_ROOT, ["write"])];
+  it("deny rule works regardless of scope — from project config, denies inside path (write-only)", () => {
+    const rules: ParsedRule[] = [rule(".git/", "deny", PROJECT_ROOT, "write")];
     expect(evaluate(rules, "write", `${PROJECT_ROOT}/.git/config`, PROJECT_ROOT)).toBe("deny");
   });
 

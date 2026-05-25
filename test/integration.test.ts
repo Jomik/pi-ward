@@ -28,11 +28,11 @@ function makeRule(
   pattern: string,
   effect: "allow" | "deny",
   configDir: string,
-  operations?: ("read" | "write")[],
+  operations?: "read" | "write",
 ): ParsedRule {
   return {
     pattern: parsePattern(pattern),
-    operations: operations ?? ["read", "write"],
+    operations: operations ?? "read",
     effect,
     configDir,
   };
@@ -116,7 +116,7 @@ describe("rule: deny .env files", () => {
     const envFile = join(projectRoot, ".env.local");
     await writeFile(envFile, "SECRET=foo");
 
-    const rules: ParsedRule[] = [makeRule(".env*", "deny", projectRoot, ["read", "write"])];
+    const rules: ParsedRule[] = [makeRule(".env*", "deny", projectRoot, "read")];
 
     const result = await guard("read", [envFile], "read", rules, projectRoot, []);
 
@@ -149,7 +149,7 @@ describe("rule: allow read outside project root", () => {
     await writeFile(file, "data");
 
     // configDir = tempDir (parent of both project and outside) — simulates a group-level config
-    const rules: ParsedRule[] = [makeRule("./", "allow", tempDir, ["read"])];
+    const rules: ParsedRule[] = [makeRule("./", "allow", tempDir, "read")];
 
     const result = await guard("read", [file], "read", rules, projectRoot, []);
 

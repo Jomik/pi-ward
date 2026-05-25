@@ -56,7 +56,7 @@ async function writeConfig(filePath: string, content: unknown): Promise<void> {
 // Helper to construct a minimal valid config object.
 // ---------------------------------------------------------------------------
 
-function cfg(rules: { pattern: string; effect: "allow" | "deny"; operations?: ("read" | "write")[] }[]) {
+function cfg(rules: { pattern: string; effect: "allow" | "deny"; operations?: "read" | "write" }[]) {
   return { rules };
 }
 
@@ -86,12 +86,12 @@ describe("global config only", () => {
     expect(result.rules[0].effect).toBe("deny");
   });
 
-  it("expands missing operations to both read and write", async () => {
+  it('defaults missing operations to "read"', async () => {
     await writeConfig(join(testHome, ".pi", "agent", "ward.json"), cfg([{ pattern: "*.pem", effect: "deny" }]));
 
     const result = await loadConfig(testProject);
 
-    expect(result.rules[0].operations).toEqual(["read", "write"]);
+    expect(result.rules[0].operations).toBe("read");
   });
 });
 
@@ -113,12 +113,12 @@ describe("project config only", () => {
   it("preserves explicit operations from the raw rule", async () => {
     await writeConfig(
       join(testProject, ".pi", "ward.json"),
-      cfg([{ pattern: ".git/", effect: "deny", operations: ["write"] }]),
+      cfg([{ pattern: ".git/", effect: "deny", operations: "write" }]),
     );
 
     const result = await loadConfig(testProject);
 
-    expect(result.rules[0].operations).toEqual(["write"]);
+    expect(result.rules[0].operations).toBe("write");
   });
 });
 
@@ -224,7 +224,7 @@ describe("schema errors", () => {
 
   it("throws when operations contains an invalid value", async () => {
     const configPath = join(testHome, ".pi", "agent", "ward.json");
-    await writeConfig(configPath, { rules: [{ pattern: ".env", effect: "deny", operations: ["execute"] }] });
+    await writeConfig(configPath, { rules: [{ pattern: ".env", effect: "deny", operations: "execute" }] });
 
     await expect(loadConfig(testProject)).rejects.toThrow(/operations/);
   });

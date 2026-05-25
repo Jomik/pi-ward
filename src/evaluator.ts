@@ -4,6 +4,22 @@ import type { Effect, Operation, ParsedRule } from "./rules.js";
 import { isDescendantOf } from "./walk.js";
 
 /**
+ * Determine whether a rule's operation level covers an incoming operation.
+ *
+ * Semantics — "write implies read":
+ *   allow + "read":  covers only reads
+ *   allow + "write": covers both reads and writes
+ *   deny  + "read":  covers both reads and writes (can't read → can't write)
+ *   deny  + "write": covers only writes
+ */
+function ruleApplies(effect: Effect, ruleOps: Operation, incomingOp: Operation): boolean {
+  if (effect === "allow") {
+    return ruleOps === "write" || incomingOp === "read";
+  }
+  return ruleOps === "read" || incomingOp === "write";
+}
+
+/**
  * Evaluate access rules for a given operation on an absolute path.
  *
  * Rules are processed top-to-bottom (first-match-wins).
@@ -28,8 +44,8 @@ export function evaluate(rules: ParsedRule[], operation: Operation, absolutePath
   }
 
   for (const rule of rules) {
-    // 1. Operation must match.
-    if (!rule.operations.includes(operation)) continue;
+    // 1. Operation must cover the incoming operation.
+    if (!ruleApplies(rule.effect, rule.operations, operation)) continue;
 
     // 2. Path must match the pattern.
     if (!matches(rule.pattern, rule.configDir, absolutePath)) continue;

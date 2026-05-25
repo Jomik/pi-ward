@@ -32,14 +32,26 @@ Two logical operations, covering all file-touching tools:
 | Operation | Covers |
 |-----------|--------|
 | `read` | read, grep, ls, find |
-| `write` | write, edit |
+| `write` | write, edit, delete |
 
 ### Rule Structure
 
 A rule specifies a pattern, which operations it governs, and what effect to apply:
 
 - **pattern** — simple path pattern. See Pattern Matching below.
-- **operations** — `["read"]`, `["write"]`, or `["read", "write"]`. When omitted, applies to both.
+- **operations** — `"read"` or `"write"`. Defaults to `"read"` (restrictive). See semantics below.
+
+**Effect × operation semantics** ("write implies read"):
+
+| effect | operations | Result |
+|--------|------------|--------|
+| `allow` | `"read"` (default) | Grants read access only |
+| `allow` | `"write"` | Grants full access (read + write) |
+| `deny` | `"read"` (default) | Denies all access (can't read → can't write) |
+| `deny` | `"write"` | Denies writes only (path becomes read-only) |
+
+Project baseline (inside projectRoot, no matching rule): full write access.
+
 - **effect** — `allow` or `deny`.
 
 Rules are evaluated top-to-bottom. The first matching rule determines the outcome. If no rule matches, the baseline policy applies.
@@ -98,7 +110,7 @@ Example `~/projects/private/.pi/ward.json` (group level):
 ```json
 {
   "rules": [
-    { "pattern": "./", "operations": ["read"], "effect": "allow" }
+    { "pattern": "./", "effect": "allow" }
   ]
 }
 ```
@@ -111,7 +123,7 @@ Example project-level `.pi/ward.json`:
   "rules": [
     { "pattern": ".env*", "effect": "deny" },
     { "pattern": "*.pem", "effect": "deny" },
-    { "pattern": ".git/", "operations": ["write"], "effect": "deny" },
+    { "pattern": ".git/", "operations": "write", "effect": "deny" },
     { "pattern": ".secret/", "effect": "deny" }
   ]
 }

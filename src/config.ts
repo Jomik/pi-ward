@@ -83,7 +83,7 @@ function parseConfigRules(config: WardConfig, configDir: string, filePath: strin
 
     return {
       pattern: parsedPattern,
-      operations: rule.operations ?? ["read", "write"],
+      operations: rule.operations ?? "read",
       effect: rule.effect,
       configDir,
     };

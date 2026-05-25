@@ -2,7 +2,7 @@ import { Type } from "typebox";
 
 const RuleSchema = Type.Object({
   pattern: Type.String(),
-  operations: Type.Optional(Type.Array(Type.Union([Type.Literal("read"), Type.Literal("write")]))),
+  operations: Type.Optional(Type.Union([Type.Literal("read"), Type.Literal("write")])),
   effect: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
 });
 
