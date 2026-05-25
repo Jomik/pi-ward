@@ -395,6 +395,84 @@ describe('global config rejects "./"-anchored patterns', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Home-anchored allow rules outside configDir (issue #8)
+// ---------------------------------------------------------------------------
+
+describe("home-anchored allow rules outside configDir", () => {
+  it("throws when ~/ allow rule target is structurally outside configDir", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/.ssh/", effect: "allow" }]));
+
+    await expect(loadConfig(testProject, testHome)).rejects.toThrow(/can never match within the config directory/);
+  });
+
+  it("throws for ~/ allow targeting a sibling directory of configDir", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/other-project/", effect: "allow" }]));
+
+    await expect(loadConfig(testProject, testHome)).rejects.toThrow(/can never match within the config directory/);
+  });
+
+  it("does not throw when ~/ allow pattern resolves within configDir", async () => {
+    // ~/projects/myproject/secrets/ — effectiveRoot is within configDir
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/projects/myproject/secrets/", effect: "allow" }]));
+
+    await expect(loadConfig(testProject, testHome)).resolves.toBeDefined();
+  });
+
+  it("does not throw when configDir is within ~/ allow pattern's effective root", async () => {
+    // ~/projects/ — configDir (~/projects/myproject) is within effectiveRoot
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/projects/", effect: "allow" }]));
+
+    await expect(loadConfig(testProject, testHome)).resolves.toBeDefined();
+  });
+
+  it("does not throw for bare ~/ allow (effectiveRoot = homeDir)", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/", effect: "allow" }]));
+
+    await expect(loadConfig(testProject, testHome)).resolves.toBeDefined();
+  });
+
+  it("does not throw when pattern has a wildcard as first segment", async () => {
+    // ~/*/.ssh/ — wildcard stops literal extraction, effectiveRoot = homeDir
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/*/.ssh/", effect: "allow" }]));
+
+    await expect(loadConfig(testProject, testHome)).resolves.toBeDefined();
+  });
+
+  it("does not throw for ~/ allow in global config", async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/.ssh/", effect: "allow" }]));
+
+    await expect(loadConfig(testProject, testHome)).resolves.toBeDefined();
+  });
+
+  it("does not throw for ~/ deny rule outside configDir", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "~/.ssh/", effect: "deny" }]));
+
+    await expect(loadConfig(testProject, testHome)).resolves.toBeDefined();
+  });
+
+  it("includes rule index in error message", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(
+      configPath,
+      cfg([
+        { pattern: ".env*", effect: "deny" },
+        { pattern: "~/.config/", effect: "allow" },
+      ]),
+    );
+
+    await expect(loadConfig(testProject, testHome)).rejects.toThrow(/rule\[1\]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Home-anchored patterns in config
 // ---------------------------------------------------------------------------
 

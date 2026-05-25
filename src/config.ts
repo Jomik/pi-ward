@@ -6,7 +6,7 @@ import { Value } from "typebox/value";
 import { parsePattern } from "./pattern.js";
 import type { ParsedRule, Rule } from "./rules.js";
 import { WardConfigSchema } from "./schema.js";
-import { ancestorDirs } from "./walk.js";
+import { ancestorDirs, isDescendantOf } from "./walk.js";
 
 export interface WardConfig {
   rules: Rule[];
@@ -105,6 +105,28 @@ function parseConfigRules(
               `can never match within the home directory "${homeDir}"`,
           );
         }
+      }
+    }
+
+    // Load-time trust check: a "~/"-home-anchored allow rule in a non-global config
+    // can never fire if its resolved prefix has no overlap with configDir.
+    if (rule.effect === "allow" && parsedPattern.homeAnchored && !isGlobal) {
+      // Extract leading literal segments (stop at first wildcard/glob).
+      const leadingLiterals: string[] = [];
+      for (const seg of parsedPattern.segments) {
+        if (seg.kind !== "literal") break;
+        leadingLiterals.push(seg.value);
+      }
+      const effectiveRoot = join(homeDir, ...leadingLiterals);
+
+      // Check if there's any possible overlap between matched paths and configDir.
+      // Valid if configDir is within effectiveRoot OR effectiveRoot is within configDir.
+      if (!isDescendantOf(effectiveRoot, configDir) && !isDescendantOf(configDir, effectiveRoot)) {
+        throw new Error(
+          `Config "${filePath}": rule[${i}]: allow rule with pattern "${rule.pattern}" ` +
+            `can never match within the config directory "${configDir}" (trust scoping restricts ` +
+            `allow rules to paths within their config's directory)`,
+        );
       }
     }
 
