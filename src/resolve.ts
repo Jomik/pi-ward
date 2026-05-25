@@ -25,17 +25,38 @@ async function resolveNewFile(normalized: string): Promise<ResolveResult> {
     }
   }
 
-  // File genuinely doesn't exist — attempt to resolve the parent for new-file writes.
-  const parent = dirname(normalized);
-  const base = basename(normalized);
-  try {
-    const realParent = await realpath(parent);
-    return { path: resolve(realParent, base) };
-  } catch (parentErr) {
-    return {
-      path: normalized,
-      denied: `Cannot resolve path "${normalized}": ${(parentErr as Error).message}`,
-    };
+  // File genuinely doesn't exist — walk up until we find an existing ancestor,
+  // resolve it via realpath, then re-append the missing tail segments.
+  // This allows writes to paths with non-existent intermediate directories
+  // (e.g. "designs/foo.md" where "designs/" hasn't been created yet).
+  let current = normalized;
+  const segments: string[] = [];
+  while (true) {
+    const parent = dirname(current);
+    segments.unshift(basename(current));
+    if (parent === current) {
+      // Reached filesystem root without finding an existing ancestor.
+      return {
+        path: normalized,
+        denied: `Cannot resolve path "${normalized}": no existing ancestor directory`,
+      };
+    }
+    current = parent;
+    try {
+      const realAncestor = await realpath(current);
+      return { path: resolve(realAncestor, ...segments) };
+    } catch (ancestorErr) {
+      const ancestorCode = (ancestorErr as { code?: string }).code;
+      if (ancestorCode === "ENOENT") {
+        // This ancestor doesn't exist either — keep walking up.
+        continue;
+      }
+      // Non-ENOENT error (EACCES, ELOOP, etc.) — fail closed.
+      return {
+        path: normalized,
+        denied: `Cannot resolve path "${normalized}": ${(ancestorErr as Error).message}`,
+      };
+    }
   }
 }
 
@@ -53,7 +74,7 @@ async function resolveNewFile(normalized: string): Promise<ResolveResult> {
  * - Any other error → denied (fail-closed).
  */
 export async function resolvePath(inputPath: string, projectRoot: string): Promise<ResolveResult> {
-  const normalized = isAbsolute(inputPath) ? inputPath : resolve(projectRoot, inputPath);
+  const normalized = isAbsolute(inputPath) ? resolve(inputPath) : resolve(projectRoot, inputPath);
 
   try {
     const real = await realpath(normalized);
