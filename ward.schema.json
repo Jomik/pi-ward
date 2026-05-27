@@ -21,7 +21,7 @@
         "properties": {
           "pattern": {
             "type": "string",
-            "description": "Path pattern to match. No prefix = unanchored segment match (e.g. `.env`, `*.pem`); `./` = anchored to the config directory; `~/` = anchored to the home directory; trailing `/` = directory match (the node itself and everything under it); `*` = wildcard matching one or more characters within a single segment.",
+            "description": "Path pattern to match. No prefix = unanchored segment match (e.g. `.env`, `*.pem`); `./` = anchored to the config directory; `~/` = anchored to the home directory; `/` = absolute path anchor (global config only, for paths outside `~`); trailing `/` = directory match (the node itself and everything under it); `*` = wildcard matching one or more characters within a single segment.",
             "examples": [
               ".env",
               "*.pem",
@@ -31,7 +31,9 @@
               "./src/*.ts",
               "~/",
               "~/.ssh/",
-              "~/.config/"
+              "~/.config/",
+              "/tmp/pi-github-repos/",
+              "/var/log/*.log"
             ]
           },
           "operations": {

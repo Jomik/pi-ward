@@ -3,7 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
+import type { ParsedPattern } from "./pattern.js";
 import { parsePattern } from "./pattern.js";
+import { resolveRealPath } from "./resolve.js";
 import type { ParsedRule, Rule } from "./rules.js";
 import { WardConfigSchema } from "./schema.js";
 import { ancestorDirs, isDescendantOf } from "./walk.js";
@@ -61,6 +63,46 @@ function validateConfig(raw: unknown, filePath: string): WardConfig {
 }
 
 /**
+ * Resolve the leading literal segments of an absolute-anchored pattern via realpath.
+ * This handles symlinks like macOS /tmp → /private/tmp.
+ *
+ * Strategy: find the longest leading literal prefix, resolve it, then re-derive segments.
+ * If the prefix can't be resolved, the pattern is left unchanged — it may fail to match
+ * symlink-resolved access paths but is otherwise harmless.
+ */
+async function resolveAbsolutePattern(pattern: ParsedPattern): Promise<ParsedPattern> {
+  // Extract leading literal segments (stop at first wildcard/glob).
+  const leadingLiterals: string[] = [];
+  for (const seg of pattern.segments) {
+    if (seg.kind !== "literal") break;
+    leadingLiterals.push(seg.value);
+  }
+
+  if (leadingLiterals.length === 0) return pattern;
+
+  const literalPath = join("/", ...leadingLiterals);
+  let resolvedPath: string | null;
+  try {
+    resolvedPath = await resolveRealPath(literalPath);
+  } catch {
+    // EACCES/ELOOP etc. — leave pattern as-is. It may fail to match
+    // symlink-resolved access paths but can still match in non-symlink cases.
+    return pattern;
+  }
+  if (resolvedPath === null) return pattern;
+
+  // Re-derive segments from the resolved path + any trailing non-literal segments.
+  const resolvedSegments = resolvedPath.split(/[/\\]/).filter((s) => s !== "");
+  const trailingSegments = pattern.segments.slice(leadingLiterals.length);
+  const newSegments = [
+    ...resolvedSegments.map((s): { kind: "literal"; value: string } => ({ kind: "literal", value: s })),
+    ...trailingSegments,
+  ];
+
+  return { ...pattern, segments: newSegments };
+}
+
+/**
  * Parse validated rules into ParsedRules, attaching configDir and checking
  * for allow rules that can structurally never match within their scope.
  *
@@ -69,16 +111,19 @@ function validateConfig(raw: unknown, filePath: string): WardConfig {
  * - An allow rule has a "./"-anchored pattern starting with ".." (escapes config dir)
  * - An allow rule has a "~/"-home-anchored pattern starting with ".." (escapes home dir)
  * - isGlobal is true and a rule uses a "./"-anchored pattern
+ * - isGlobal is false and a rule uses an absolute-anchored pattern
  */
-function parseConfigRules(
+async function parseConfigRules(
   config: WardConfig,
   configDir: string,
   filePath: string,
   homeDir: string,
   isGlobal = false,
-): ParsedRule[] {
-  return config.rules.map((rule, i) => {
-    const parsedPattern = parsePattern(rule.pattern);
+): Promise<ParsedRule[]> {
+  const results: ParsedRule[] = [];
+  for (let i = 0; i < config.rules.length; i++) {
+    const rule = config.rules[i];
+    let parsedPattern = parsePattern(rule.pattern);
 
     // Global config disallows "./"-anchored patterns (no sensible "current directory").
     if (isGlobal && parsedPattern.anchored) {
@@ -86,6 +131,18 @@ function parseConfigRules(
         `Config "${filePath}": rule[${i}]: "./"-anchored pattern "${rule.pattern}" is not allowed in the global config. ` +
           `Use "~/" for home-relative paths or unanchored patterns.`,
       );
+    }
+
+    // Non-global configs disallow absolute-anchored patterns.
+    if (!isGlobal && parsedPattern.absoluteAnchored) {
+      throw new Error(
+        `Config "${filePath}": rule[${i}]: absolute-path pattern "${rule.pattern}" is only allowed in the global config.`,
+      );
+    }
+
+    // Resolve absolute-anchored patterns to handle symlinks (e.g. macOS /tmp → /private/tmp).
+    if (parsedPattern.absoluteAnchored) {
+      parsedPattern = await resolveAbsolutePattern(parsedPattern);
     }
 
     // Load-time trust check: a "./"-anchored or "~/"-home-anchored allow pattern
@@ -130,14 +187,15 @@ function parseConfigRules(
       }
     }
 
-    return {
+    results.push({
       pattern: parsedPattern,
       operations: rule.operations ?? "read",
       effect: rule.effect,
-      configDir,
+      configDir: parsedPattern.absoluteAnchored ? "/" : configDir,
       homeDir,
-    };
-  });
+    });
+  }
+  return results;
 }
 
 /**
@@ -160,7 +218,7 @@ export async function loadConfig(projectRoot: string, homeDir?: string): Promise
   const globalConfigPath = join(getAgentDir(), "ward.json");
   const globalConfig = await readConfigFile(globalConfigPath);
   if (globalConfig !== null) {
-    allRules.push(...parseConfigRules(globalConfig, home, globalConfigPath, home, true));
+    allRules.push(...(await parseConfigRules(globalConfig, home, globalConfigPath, home, true)));
   }
 
   // Steps 2+3: walk ancestor directories from home to projectRoot (inclusive).
@@ -170,7 +228,7 @@ export async function loadConfig(projectRoot: string, homeDir?: string): Promise
     const configPath = join(dir, ".pi", "ward.json");
     const config = await readConfigFile(configPath);
     if (config !== null) {
-      allRules.push(...parseConfigRules(config, dir, configPath, home));
+      allRules.push(...(await parseConfigRules(config, dir, configPath, home)));
     }
   }
 

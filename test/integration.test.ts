@@ -107,6 +107,32 @@ describe("self-protection", () => {
 
     expect(result.allowed).toBe(true);
   });
+
+  it("absolute-anchored allow rule cannot bypass write-protection of config files", async () => {
+    const piDir = join(projectRoot, ".pi");
+    const wardConfig = join(piDir, "ward.json");
+    await mkdir(piDir, { recursive: true });
+    await writeFile(wardConfig, '{"rules":[]}');
+
+    // An absolute-allow rule that covers the config file's directory
+    const resolvedProject = await realpath(projectRoot);
+    const rules: ParsedRule[] = [
+      {
+        pattern: parsePattern(`${resolvedProject}/`),
+        operations: "write",
+        effect: "allow",
+        configDir: "/",
+        homeDir: tempDir,
+      },
+    ];
+
+    const result = await guard("write", [wardConfig], "write", rules, projectRoot, [wardConfig]);
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toMatch(/ward config/i);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -304,5 +330,76 @@ describe("rule: home-anchored allow read within home", () => {
     const result = await guard("read", [secretFile], "read", rules, projectRoot, []);
 
     expect(result.allowed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Absolute-anchored patterns (symlink resolution)
+// ---------------------------------------------------------------------------
+
+describe("rule: absolute-anchored allow read (with symlink resolution)", () => {
+  it("allows read via symlink when rule uses the canonical real path", async () => {
+    // Verifies the end-to-end flow: a rule built from the realpath'd canonical
+    // form of a directory correctly allows access through a symlink to that dir
+    // (since guard also resolves access paths via realpath).
+    const targetDir = join(tempDir, "repos");
+    await mkdir(targetDir, { recursive: true });
+    const file = join(targetDir, "file.ts");
+    await writeFile(file, "content");
+
+    // Create a symlink pointing to the target
+    const linkPath = join(tempDir, "repos-link");
+    await symlink(targetDir, linkPath);
+
+    // Rule uses the canonical (realpath'd) form of the target directory.
+    // This simulates what resolveAbsolutePattern produces at config load time.
+    const resolvedTarget = await realpath(targetDir);
+    const rules: ParsedRule[] = [
+      {
+        pattern: parsePattern(`${resolvedTarget}/`),
+        operations: "read",
+        effect: "allow",
+        configDir: "/",
+        homeDir: tempDir,
+      },
+    ];
+
+    // Access via the symlink — guard resolves it to realpath, matching the rule.
+    const fileViaLink = join(linkPath, "file.ts");
+    const result = await guard("read", [fileViaLink], "read", rules, projectRoot, []);
+
+    expect(result.allowed).toBe(true);
+  });
+
+  it("absolute-anchored pattern resolved at load time matches realpath'd access", async () => {
+    // Simulate what loadConfig does: resolve the pattern's literal prefix.
+    // Use tmpdir() which may be symlinked on macOS.
+    const testSubdir = join(tmpdir(), `pi-ward-abs-test-${Date.now()}`);
+    await mkdir(testSubdir, { recursive: true });
+    const testFile = join(testSubdir, "data.json");
+    await writeFile(testFile, "{}");
+
+    try {
+      // Resolve the real path (handles macOS /tmp → /private/tmp)
+      const resolvedSubdir = await realpath(testSubdir);
+
+      // Build a rule as loadConfig would: configDir="/", pattern resolved
+      const rules: ParsedRule[] = [
+        {
+          pattern: parsePattern(`${resolvedSubdir}/`),
+          operations: "read",
+          effect: "allow",
+          configDir: "/",
+          homeDir: tempDir,
+        },
+      ];
+
+      // Access via the original (potentially symlinked) path
+      const result = await guard("read", [testFile], "read", rules, projectRoot, []);
+
+      expect(result.allowed).toBe(true);
+    } finally {
+      await rm(testSubdir, { recursive: true, force: true });
+    }
   });
 });

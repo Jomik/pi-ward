@@ -232,9 +232,77 @@ describe("matches — case-insensitive matching", () => {
       expect(m("~/.ssh/", "/home/user/.SSH/id_rsa", CONFIG_DIR, "/home/user")).toBe(true);
     });
   });
+
+  describe("`/tmp/repos/` absolute-anchored pattern matches uppercase/mixed-case", () => {
+    it("matches /TMP/repos/file.ts", () => {
+      expect(m("/tmp/repos/", "/TMP/repos/file.ts")).toBe(true);
+    });
+
+    it("matches /tmp/REPOS/file.ts", () => {
+      expect(m("/tmp/repos/", "/tmp/REPOS/file.ts")).toBe(true);
+    });
+  });
 });
 
 const HOME_DIR = "/home/user";
+
+describe("matches — absolute-anchored patterns", () => {
+  describe("`/tmp/pi-github-repos/` — absolute directory pattern", () => {
+    it("matches /tmp/pi-github-repos itself", () => {
+      expect(m("/tmp/pi-github-repos/", "/tmp/pi-github-repos")).toBe(true);
+    });
+
+    it("matches a file inside /tmp/pi-github-repos", () => {
+      expect(m("/tmp/pi-github-repos/", "/tmp/pi-github-repos/repo/README.md")).toBe(true);
+    });
+
+    it("does not match /tmp/other", () => {
+      expect(m("/tmp/pi-github-repos/", "/tmp/other")).toBe(false);
+    });
+
+    it("does not match a path outside /tmp", () => {
+      expect(m("/tmp/pi-github-repos/", "/home/user/pi-github-repos")).toBe(false);
+    });
+  });
+
+  describe("`/tmp/*.log` — absolute wildcard pattern", () => {
+    it("matches /tmp/app.log", () => {
+      expect(m("/tmp/*.log", "/tmp/app.log")).toBe(true);
+    });
+
+    it("matches /tmp/debug.log", () => {
+      expect(m("/tmp/*.log", "/tmp/debug.log")).toBe(true);
+    });
+
+    it("does not match /tmp/subdir/app.log (too many segments)", () => {
+      expect(m("/tmp/*.log", "/tmp/subdir/app.log")).toBe(false);
+    });
+
+    it("does not match /tmp/app.txt", () => {
+      expect(m("/tmp/*.log", "/tmp/app.txt")).toBe(false);
+    });
+  });
+
+  describe("`/tmp/foo` — exact absolute path (non-directory)", () => {
+    it("matches /tmp/foo exactly", () => {
+      expect(m("/tmp/foo", "/tmp/foo")).toBe(true);
+    });
+
+    it("does not match /tmp/foo/bar (too many segments)", () => {
+      expect(m("/tmp/foo", "/tmp/foo/bar")).toBe(false);
+    });
+
+    it("does not match /tmp/bar", () => {
+      expect(m("/tmp/foo", "/tmp/bar")).toBe(false);
+    });
+  });
+
+  describe("absolute-anchored ignores configDir", () => {
+    it("matches regardless of what configDir is", () => {
+      expect(m("/tmp/foo/", "/tmp/foo/bar", "/some/other/dir")).toBe(true);
+    });
+  });
+});
 
 describe("matches — home-anchored patterns", () => {
   describe("`~/` — everything at/below home dir", () => {

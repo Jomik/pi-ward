@@ -72,11 +72,14 @@ Minimal pattern syntax:
 | `./src/*.ts` | `*` works within any segment in an anchored path | `src/index.ts` ✓, `src/lib/foo.ts` ✗ |
 | `~/.ssh/` | `~/` anchors to the home directory (absolute) | `~/.ssh/id_rsa` ✓, `/tmp/.ssh/key` ✗ |
 | `~/.pi/agent/skills/` | Home-anchored directory match | `~/.pi/agent/skills/design/SKILL.md` ✓ |
+| `/tmp/repos/` | Absolute path — matches the directory and everything under it (global config only) | `/tmp/repos/foo` ✓, `/var/repos/foo` ✗ |
+| `/tmp/*.log` | Absolute path with wildcard | `/tmp/app.log` ✓, `/tmp/sub/app.log` ✗ |
 
 Rules:
 - **No prefix** — unanchored. Must be a single-segment pattern. Matches against every segment in the path.
 - **`./`** — anchored to the directory the config governs (parent of the `.pi/` directory containing the config). Can include path separators. **Not valid in the global config** (there is no governing directory).
 - **`~/`** — anchored to the home directory. The home path is captured at config load time and used for matching. Can include path separators. Useful in the global config for targeting specific paths.
+- **`/`** — absolute path anchor. Can include path separators. **Only valid in the global config.** The leading literal segments are resolved via `realpath` at config load time to canonicalize symlinks (e.g., `/tmp/repos/` → `/private/tmp/repos/` on macOS). Useful for granting access to paths outside the home directory.
 - **Trailing `/`** — directory match: the directory node itself and everything under it.
 - **`*`** — wildcard within a single segment (does not cross `/`). Matches one or more characters. Prefix (`foo*`), suffix (`*.ext`), or both (`foo*.ext`).
 - Unanchored patterns containing `/` are invalid (syntax error). Use `./` or `~/` to write multi-segment patterns.
@@ -98,13 +101,13 @@ The walk does not extend above the home directory. Sessions with a project root 
 Rules are concatenated in load order (global first, project last) into a single flat list. First match wins — global rules always take precedence.
 
 **Why global wins:** This inverts the "most-specific-wins" convention familiar from gitconfig or eslint. The inversion is deliberate: a security boundary must not allow untrusted inner configs to weaken trusted outer configs. Global rules are set by the user; project configs may come from cloned repos.
-The global config's scope is the home directory — it can allow access anywhere at or below `~`.
+The global config's scope is the home directory — it can allow access anywhere at or below `~`. Additionally, absolute-path patterns (starting with `/`) in the global config can allow access to paths outside `~` (e.g., `/tmp/pi-github-repos/`).
 
 **Trust scoping:** A config can only `allow` access to paths at or below the directory it governs. This is enforced at match time: when a rule matches and its effect is `allow`, the resolved absolute path must be at or below the config's trust scope for the allow to take effect. If not, the rule is skipped and evaluation continues to the next rule.
 
 A config can `deny` any path regardless of scope.
 
-- Global config's trust scope is the home directory — it can `allow` within `~`, and `deny` any path.
+- Global config's trust scope is the home directory — it can `allow` within `~`, and `deny` any path. Absolute-anchored allow rules (prefix `/`) use `/` as their trust scope, meaning they can match any absolute path; they are restricted to the global config only for security.
 - `~/projects/private/.pi/ward.json` can allow access within `~/projects/private/`.
 - A leaf project config can only allow within its own tree (which the baseline already grants).
 - An `allow` rule that can never take effect (pattern structurally references outside the config's scope) is a load-time error.
@@ -115,6 +118,7 @@ Example `~/.pi/agent/ward.json` (global config):
 {
   "rules": [
     { "pattern": "~/.pi/agent/skills/", "effect": "allow" },
+    { "pattern": "/tmp/pi-github-repos/", "effect": "allow" },
     { "pattern": ".env*", "effect": "deny" },
     { "pattern": "*.pem", "effect": "deny" },
     { "pattern": "~/.ssh/", "effect": "deny" }

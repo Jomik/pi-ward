@@ -59,6 +59,7 @@ function matchesAnchored(pattern: ParsedPattern, configDir: string, absolutePath
  */
 export function matches(pattern: ParsedPattern, configDir: string, absolutePath: string, homeDir?: string): boolean {
   if (pattern.anchored) return matchesAnchored(pattern, configDir, absolutePath);
+  if (pattern.absoluteAnchored) return matchesAnchored(pattern, "/", absolutePath);
   if (pattern.homeAnchored) {
     if (homeDir === undefined) {
       throw new Error("matches: homeDir is required for home-anchored patterns");
