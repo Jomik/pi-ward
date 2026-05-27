@@ -49,6 +49,16 @@ Example `.pi/ward.json`:
 }
 ```
 
+Absolute-path patterns (starting with `/`) can be used in `~/.pi/agent/ward.json` to grant access to paths outside `~`:
+
+```json
+{
+  "rules": [
+    { "pattern": "/tmp/pi-github-repos/", "effect": "allow" }
+  ]
+}
+```
+
 ### Operations
 
 The `operations` field controls the access level a rule grants or restricts. It defaults to `"read"` (restrictive).

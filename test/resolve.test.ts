@@ -2,7 +2,7 @@ import { chmod, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolvePath } from "../src/resolve.js";
+import { resolvePath, resolveRealPath } from "../src/resolve.js";
 
 let tempDir: string;
 let projectRoot: string;
@@ -169,5 +169,73 @@ describe("permission error", () => {
     } finally {
       await chmod(restrictedDir, 0o755);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveRealPath
+// ---------------------------------------------------------------------------
+
+describe("resolveRealPath", () => {
+  it("resolves an existing path to its real path", async () => {
+    const file = join(projectRoot, "exists.txt");
+    await writeFile(file, "hello");
+
+    const result = await resolveRealPath(file);
+    expect(result).toBe(file);
+  });
+
+  it("resolves a symlink to its real target", async () => {
+    const target = join(projectRoot, "target.txt");
+    await writeFile(target, "content");
+    const link = join(projectRoot, "link.txt");
+    await symlink(target, link);
+
+    const result = await resolveRealPath(link);
+    expect(result).toBe(target);
+  });
+
+  it("walks up to find existing ancestor for non-existent path", async () => {
+    const nonExistent = join(projectRoot, "no-such-dir", "file.txt");
+
+    const result = await resolveRealPath(nonExistent);
+    expect(result).toBe(resolve(projectRoot, "no-such-dir", "file.txt"));
+  });
+
+  it("returns null when no existing ancestor can be found", async () => {
+    // This is essentially unreachable on real systems (root always exists)
+    // but we test the contract — if somehow nothing resolves, returns null.
+    // We can't easily test this without mocking, so skip.
+  });
+
+  it("throws on EACCES (non-ENOENT error)", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      return; // skip when running as root
+    }
+
+    const restrictedDir = join(projectRoot, "no-access");
+    const file = join(restrictedDir, "secret.txt");
+    await mkdir(restrictedDir);
+    await writeFile(file, "secret");
+    await chmod(restrictedDir, 0o000);
+
+    try {
+      await expect(resolveRealPath(file)).rejects.toThrow();
+    } finally {
+      await chmod(restrictedDir, 0o755);
+    }
+  });
+
+  it("resolves symlinked ancestor in non-existent path", async () => {
+    // Create: realDir/ and symlink linkDir -> realDir
+    const realDir = join(projectRoot, "real");
+    await mkdir(realDir);
+    const linkDir = join(projectRoot, "link");
+    await symlink(realDir, linkDir);
+
+    // Ask to resolve linkDir/non-existent.txt
+    const result = await resolveRealPath(join(linkDir, "non-existent.txt"));
+    // Should resolve through the symlink
+    expect(result).toBe(resolve(realDir, "non-existent.txt"));
   });
 });

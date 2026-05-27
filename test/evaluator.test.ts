@@ -209,3 +209,61 @@ describe("home-anchored patterns", () => {
     expect(evaluate(rules, "read", `${groupConfigDir}/shared/lib.ts`, PROJECT_ROOT)).toBe("allow");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Absolute-anchored patterns — trust scoping with configDir = "/"
+// ---------------------------------------------------------------------------
+
+describe("absolute-anchored patterns — trust scoping with configDir=/", () => {
+  it("absolute-anchored allow rule grants access to path outside home and projectRoot", () => {
+    const rules: ParsedRule[] = [rule("/tmp/pi-github-repos/", "allow", "/", "read")];
+    expect(evaluate(rules, "read", "/tmp/pi-github-repos/repo/file.ts", PROJECT_ROOT)).toBe("allow");
+  });
+
+  it("absolute-anchored allow rule grants access to the directory itself", () => {
+    const rules: ParsedRule[] = [rule("/tmp/pi-github-repos/", "allow", "/", "read")];
+    expect(evaluate(rules, "read", "/tmp/pi-github-repos", PROJECT_ROOT)).toBe("allow");
+  });
+
+  it("absolute-anchored allow rule does not grant access to paths outside the pattern", () => {
+    const rules: ParsedRule[] = [rule("/tmp/pi-github-repos/", "allow", "/", "read")];
+    expect(evaluate(rules, "read", "/tmp/other-dir/file.ts", PROJECT_ROOT)).toBe("deny");
+  });
+
+  it("absolute-anchored deny rule blocks access regardless of baseline", () => {
+    const rules: ParsedRule[] = [rule("/tmp/forbidden/", "deny", "/")];
+    expect(evaluate(rules, "read", "/tmp/forbidden/secret.key", PROJECT_ROOT)).toBe("deny");
+  });
+
+  it("absolute-anchored write allow grants both read and write", () => {
+    const rules: ParsedRule[] = [rule("/tmp/scratch/", "allow", "/", "write")];
+    expect(evaluate(rules, "read", "/tmp/scratch/file.txt", PROJECT_ROOT)).toBe("allow");
+    expect(evaluate(rules, "write", "/tmp/scratch/file.txt", PROJECT_ROOT)).toBe("allow");
+  });
+
+  it("absolute-anchored read allow does not grant write", () => {
+    const rules: ParsedRule[] = [rule("/tmp/pi-github-repos/", "allow", "/", "read")];
+    expect(evaluate(rules, "write", "/tmp/pi-github-repos/file.ts", PROJECT_ROOT)).toBe("deny");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-rule-type interaction: absolute-allow + unanchored-deny
+// ---------------------------------------------------------------------------
+
+describe("rule interaction — absolute-allow with unanchored-deny", () => {
+  it("deny .env* before allow /tmp/repos/ — denies .env inside allowed dir", () => {
+    const rules: ParsedRule[] = [rule(".env*", "deny", "/"), rule("/tmp/repos/", "allow", "/", "read")];
+    expect(evaluate(rules, "read", "/tmp/repos/.env.local", PROJECT_ROOT)).toBe("deny");
+  });
+
+  it("allow /tmp/repos/ before deny .env* — allows .env inside allowed dir (first-match-wins)", () => {
+    const rules: ParsedRule[] = [rule("/tmp/repos/", "allow", "/", "read"), rule(".env*", "deny", "/")];
+    expect(evaluate(rules, "read", "/tmp/repos/.env.local", PROJECT_ROOT)).toBe("allow");
+  });
+
+  it("deny *.pem before allow /tmp/certs/ — denies .pem inside allowed dir", () => {
+    const rules: ParsedRule[] = [rule("*.pem", "deny", "/"), rule("/tmp/certs/", "allow", "/", "read")];
+    expect(evaluate(rules, "read", "/tmp/certs/server.pem", PROJECT_ROOT)).toBe("deny");
+  });
+});

@@ -8,6 +8,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: false,
+        absoluteAnchored: false,
         directory: false,
         segments: [{ kind: "literal", value: ".env" }],
       });
@@ -18,6 +19,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: false,
+        absoluteAnchored: false,
         directory: true,
         segments: [{ kind: "literal", value: ".secret" }],
       });
@@ -30,6 +32,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: false,
+        absoluteAnchored: false,
         directory: false,
         segments: [{ kind: "prefix", prefix: ".env" }],
       });
@@ -40,6 +43,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: false,
+        absoluteAnchored: false,
         directory: false,
         segments: [{ kind: "suffix", suffix: ".pem" }],
       });
@@ -47,7 +51,13 @@ describe("parsePattern", () => {
 
     it("parses bare wildcard (*)", () => {
       const p = parsePattern("*");
-      expect(p).toEqual({ anchored: false, homeAnchored: false, directory: false, segments: [{ kind: "wildcard" }] });
+      expect(p).toEqual({
+        anchored: false,
+        homeAnchored: false,
+        absoluteAnchored: false,
+        directory: false,
+        segments: [{ kind: "wildcard" }],
+      });
     });
 
     it("parses both-side wildcard (foo*.ext)", () => {
@@ -55,6 +65,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: false,
+        absoluteAnchored: false,
         directory: false,
         segments: [{ kind: "both", prefix: "foo", suffix: ".ext" }],
       });
@@ -64,7 +75,13 @@ describe("parsePattern", () => {
   describe("anchored patterns", () => {
     it("parses './' (everything at/below config dir)", () => {
       const p = parsePattern("./");
-      expect(p).toEqual({ anchored: true, homeAnchored: false, directory: true, segments: [] });
+      expect(p).toEqual({
+        anchored: true,
+        homeAnchored: false,
+        absoluteAnchored: false,
+        directory: true,
+        segments: [],
+      });
     });
 
     it("parses './.secret/' (anchored directory)", () => {
@@ -72,6 +89,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: true,
         homeAnchored: false,
+        absoluteAnchored: false,
         directory: true,
         segments: [{ kind: "literal", value: ".secret" }],
       });
@@ -82,6 +100,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: true,
         homeAnchored: false,
+        absoluteAnchored: false,
         directory: false,
         segments: [
           { kind: "literal", value: "src" },
@@ -95,6 +114,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: true,
         homeAnchored: false,
+        absoluteAnchored: false,
         directory: false,
         segments: [{ kind: "literal", value: "src" }],
       });
@@ -104,7 +124,13 @@ describe("parsePattern", () => {
   describe("home-anchored patterns", () => {
     it("parses '~/' (everything at/below home dir)", () => {
       const p = parsePattern("~/");
-      expect(p).toEqual({ anchored: false, homeAnchored: true, directory: true, segments: [] });
+      expect(p).toEqual({
+        anchored: false,
+        homeAnchored: true,
+        absoluteAnchored: false,
+        directory: true,
+        segments: [],
+      });
     });
 
     it("parses '~/.ssh/' (home-anchored directory)", () => {
@@ -112,6 +138,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: true,
+        absoluteAnchored: false,
         directory: true,
         segments: [{ kind: "literal", value: ".ssh" }],
       });
@@ -128,6 +155,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: true,
+        absoluteAnchored: false,
         directory: true,
         segments: [
           { kind: "literal", value: ".pi" },
@@ -142,6 +170,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: true,
+        absoluteAnchored: false,
         directory: false,
         segments: [
           { kind: "literal", value: "projects" },
@@ -155,6 +184,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: true,
+        absoluteAnchored: false,
         directory: false,
         segments: [{ kind: "literal", value: "file.txt" }],
       });
@@ -165,6 +195,7 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: true,
+        absoluteAnchored: false,
         directory: false,
         segments: [{ kind: "literal", value: "docs" }],
       });
@@ -175,9 +206,74 @@ describe("parsePattern", () => {
       expect(p).toEqual({
         anchored: false,
         homeAnchored: true,
+        absoluteAnchored: false,
         directory: false,
         segments: [{ kind: "suffix", suffix: ".pem" }],
       });
+    });
+  });
+
+  describe("absolute-anchored patterns", () => {
+    it("parses '/tmp/foo/' (directory)", () => {
+      const p = parsePattern("/tmp/foo/");
+      expect(p).toEqual({
+        anchored: false,
+        homeAnchored: false,
+        absoluteAnchored: true,
+        directory: true,
+        segments: [
+          { kind: "literal", value: "tmp" },
+          { kind: "literal", value: "foo" },
+        ],
+      });
+    });
+
+    it("parses '/tmp/*.log' (non-directory with wildcard)", () => {
+      const p = parsePattern("/tmp/*.log");
+      expect(p).toEqual({
+        anchored: false,
+        homeAnchored: false,
+        absoluteAnchored: true,
+        directory: false,
+        segments: [
+          { kind: "literal", value: "tmp" },
+          { kind: "suffix", suffix: ".log" },
+        ],
+      });
+    });
+
+    it("parses '/tmp/foo' (non-directory)", () => {
+      const p = parsePattern("/tmp/foo");
+      expect(p).toEqual({
+        anchored: false,
+        homeAnchored: false,
+        absoluteAnchored: true,
+        directory: false,
+        segments: [
+          { kind: "literal", value: "tmp" },
+          { kind: "literal", value: "foo" },
+        ],
+      });
+    });
+
+    it("throws for bare '/' (invalid)", () => {
+      expect(() => parsePattern("/")).toThrow(/must specify a path/);
+    });
+
+    it("throws for '//' (empty body after stripping)", () => {
+      expect(() => parsePattern("//")).toThrow(/must specify a path/);
+    });
+
+    it("throws for '/tmp/../etc' (dot-dot segment)", () => {
+      expect(() => parsePattern("/tmp/../etc")).toThrow(/"." and ".." segments are not allowed/);
+    });
+
+    it("throws for '/./tmp' (dot segment)", () => {
+      expect(() => parsePattern("/./tmp")).toThrow(/"." and ".." segments are not allowed/);
+    });
+
+    it("throws for empty segment in absolute-anchored pattern (/tmp//foo)", () => {
+      expect(() => parsePattern("/tmp//foo")).toThrow(/empty segment/);
     });
   });
 

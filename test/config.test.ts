@@ -13,7 +13,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   getAgentDir: vi.fn(),
 }));
 
-import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -351,6 +351,77 @@ describe("homeDir stored on ParsedRule", () => {
     const result = await loadConfig(testProject, testHome);
 
     expect(result.rules[0].homeDir).toBe(testHome);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Absolute-anchored patterns
+// ---------------------------------------------------------------------------
+
+describe("absolute-anchored patterns", () => {
+  it("throws when a non-global config contains an absolute-anchored pattern", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "/tmp/foo/", effect: "allow" }]));
+
+    await expect(loadConfig(testProject)).rejects.toThrow(/absolute-path pattern.*only allowed in the global config/);
+  });
+
+  it("throws for absolute-anchored pattern in an ancestor (non-global) config", async () => {
+    const configPath = join(testHome, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "/tmp/logs/", effect: "deny" }]));
+
+    await expect(loadConfig(testProject)).rejects.toThrow(/absolute-path pattern.*only allowed in the global config/);
+  });
+
+  it("loads absolute-anchored pattern successfully in global config", async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "/tmp/pi-github-repos/", effect: "allow" }]));
+
+    const result = await loadConfig(testProject);
+    expect(result.rules).toHaveLength(1);
+    expect(result.rules[0].pattern.absoluteAnchored).toBe(true);
+  });
+
+  it("sets configDir to '/' for absolute-anchored rules in global config", async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: "/tmp/pi-github-repos/", effect: "allow" }]));
+
+    const result = await loadConfig(testProject);
+    expect(result.rules[0].configDir).toBe("/");
+  });
+
+  it("includes rule index in absolute-anchored error message", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(
+      configPath,
+      cfg([
+        { pattern: ".env*", effect: "deny" },
+        { pattern: "/tmp/foo/", effect: "allow" },
+      ]),
+    );
+
+    await expect(loadConfig(testProject)).rejects.toThrow(/rule\[1\]/);
+  });
+
+  it("resolves symlinks in absolute-anchored pattern prefix at load time", async () => {
+    // Create a real directory and a symlink to it
+    const realDir = join(tempBase, "real-repos");
+    await mkdir(realDir, { recursive: true });
+    const linkDir = join(tempBase, "link-repos");
+    await symlink(realDir, linkDir);
+
+    // Write a global config using the symlink path
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: `${linkDir}/`, effect: "allow" }]));
+
+    const result = await loadConfig(testProject);
+    expect(result.rules).toHaveLength(1);
+
+    // The loaded rule's pattern segments should be derived from the realpath'd form
+    const resolvedDir = await realpath(linkDir);
+    const expectedSegments = resolvedDir.split(/[/\\]/).filter((s) => s !== "");
+    const actualValues = result.rules[0].pattern.segments.map((s) => (s.kind === "literal" ? s.value : null));
+    expect(actualValues).toEqual(expectedSegments);
   });
 });
 
