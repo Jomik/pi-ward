@@ -3,20 +3,28 @@ import { matches } from "./matcher.js";
 import type { Effect, Operation, ParsedRule } from "./rules.js";
 import { isDescendantOf } from "./walk.js";
 
+export type DenySource = "rule" | "baseline";
+
+export type EvaluateResult = { effect: "allow" } | { effect: "deny"; source: DenySource };
+
 /**
- * Determine whether a rule's operation level covers an incoming operation.
+ * Does an operation level cover an incoming operation for a given effect?
  *
- * Semantics — "write implies read":
- *   allow + "read":  covers only reads
- *   allow + "write": covers both reads and writes
- *   deny  + "read":  covers both reads and writes (can't read → can't write)
- *   deny  + "write": covers only writes
+ * "Write implies read" semantics:
+ * - allow + write → covers read and write
+ * - allow + read  → covers only read
+ * - deny  + read  → covers read and write
+ * - deny  + write → covers only write
  */
-function ruleApplies(effect: Effect, ruleOps: Operation, incomingOp: Operation): boolean {
+export function operationCovers(effect: Effect, declaredOp: Operation, incomingOp: Operation): boolean {
   if (effect === "allow") {
-    return ruleOps === "write" || incomingOp === "read";
+    return declaredOp === "write" || incomingOp === "read";
   }
-  return ruleOps === "read" || incomingOp === "write";
+  return declaredOp === "read" || incomingOp === "write";
+}
+
+function ruleApplies(effect: Effect, ruleOps: Operation, incomingOp: Operation): boolean {
+  return operationCovers(effect, ruleOps, incomingOp);
 }
 
 /**
@@ -35,7 +43,12 @@ function ruleApplies(effect: Effect, ruleOps: Operation, incomingOp: Operation):
  * @param absolutePath - The resolved absolute path being accessed.
  * @param projectRoot - The session's working directory (resolved absolute path).
  */
-export function evaluate(rules: ParsedRule[], operation: Operation, absolutePath: string, projectRoot: string): Effect {
+export function evaluate(
+  rules: ParsedRule[],
+  operation: Operation,
+  absolutePath: string,
+  projectRoot: string,
+): EvaluateResult {
   if (!isAbsolute(absolutePath)) {
     throw new Error(`evaluate: absolutePath must be absolute, got "${absolutePath}"`);
   }
@@ -58,9 +71,9 @@ export function evaluate(rules: ParsedRule[], operation: Operation, absolutePath
       }
     }
 
-    return rule.effect;
+    return rule.effect === "allow" ? { effect: "allow" } : { effect: "deny", source: "rule" };
   }
 
   // Baseline policy.
-  return isDescendantOf(projectRoot, absolutePath) ? "allow" : "deny";
+  return isDescendantOf(projectRoot, absolutePath) ? { effect: "allow" } : { effect: "deny", source: "baseline" };
 }

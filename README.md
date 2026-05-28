@@ -32,6 +32,8 @@ pi-ward intercepts file operations (`read`, `write`, `edit`) before they execute
 - Read/write within project root: allowed
 - Any access outside project root: denied
 
+When a path outside the project root is accessed and no explicit deny rule matches, ward prompts for approval (if a UI is available). You can approve or deny, scoped to a single attempt or the entire session. See [DESIGN.md](./DESIGN.md) for details.
+
 ## Config
 
 Rules are loaded from `~/.pi/agent/ward.json` (global) and `.pi/ward.json` files along the directory tree. Global rules always take precedence — inner configs can't weaken outer ones.

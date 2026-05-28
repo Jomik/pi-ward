@@ -179,6 +179,47 @@ Ward config files throughout the ancestor chain are always write-protected. This
 
 Ward checks policy before the tool executes. It does not control the tool's internal I/O implementation. Concurrent filesystem mutation by processes outside the agent (TOCTOU via symlink swaps between check and tool execution) is outside the threat model — ward protects against the agent's own actions, not against a hostile local environment racing the filesystem.
 
+### Runtime Grants (Interactive Approval)
+
+When a path is denied by baseline policy (outside project root, no explicit deny rule), ward prompts the user for approval via the TUI before blocking. This allows controlled access to external paths without pre-configuring rules.
+
+**Prompt flow (two steps):**
+
+When a baseline deny is triggered with a UI available, ward presents two sequential prompts:
+
+1. **Action** — `"Deny"` / `"Approve"` (deny is first, fail-closed default)
+2. **Scope** — `"Once"` / `"For session"`
+
+Combining these:
+
+| Action | Scope | Effect |
+|--------|-------|--------|
+| Deny | Once | Block this call. Ask again on next attempt. |
+| Deny | For session | Block and remember — suppress future prompts for this path. |
+| Approve | Once | Allow this single call. No state stored. |
+| Approve | For session | Allow and remember — auto-approve future access to this path. |
+
+If the user dismisses either prompt (e.g., Escape), the access is denied once without storing state.
+
+**Evaluation order (checkPath + handler):**
+
+1. Path resolution (symlink resolve, broken symlink check).
+2. Self-protection check (ward config files are always write-protected).
+3. Rule evaluation (first-match-wins). If a deny rule matches → hard deny, no prompt.
+4. If baseline would deny (path outside project root):
+   a. Check session grants → if match, allow silently.
+   b. Check session denies → if match, deny silently.
+   c. Prompt user → apply their choice.
+5. If baseline would allow (inside project root) → allow.
+
+**Key constraints:**
+
+- Grants are in-memory only — they do not persist across sessions.
+- Grants cannot override explicit deny rules — only baseline denies are grantable.
+- Directory grants (`directory: true`) cover the path and everything under it.
+- Operation semantics mirror rules: a write grant covers read+write; a read deny blocks both.
+- When no UI is available (non-interactive mode), baseline denies remain blocked.
+
 ## Non-Goals
 
 - **Bash command filtering** — pi-armory's responsibility.
