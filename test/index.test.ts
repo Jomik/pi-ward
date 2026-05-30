@@ -54,6 +54,17 @@ describe("extractAccess", () => {
   });
 
   // -------------------------------------------------------------------------
+  // move
+  // -------------------------------------------------------------------------
+
+  it("maps 'move' to operation='write' with source and destination paths", () => {
+    const source = join(projectRoot, "old-name.txt");
+    const destination = join(projectRoot, "new-name.txt");
+    const result = extractAccess(makeEvent("move", { source, destination }), projectRoot);
+    expect(result).toEqual({ operation: "write", paths: [source, destination] });
+  });
+
+  // -------------------------------------------------------------------------
   // grep
   // -------------------------------------------------------------------------
 

@@ -8,6 +8,7 @@ import { checkPath } from "./guard.js";
 import type { Operation } from "./rules.js";
 import { getProtectedPaths, resolveProtectedPaths } from "./self-protect.js";
 import { createDeleteTool } from "./tools/delete.js";
+import { createMoveTool } from "./tools/move.js";
 
 /**
  * Extract the guard operation and path list from a tool call event.
@@ -39,6 +40,9 @@ export function extractAccess(
   }
   if (isToolCallEventType<"delete", { path: string }>("delete", event)) {
     return { operation: "write", paths: [event.input.path] };
+  }
+  if (isToolCallEventType<"move", { source: string; destination: string }>("move", event)) {
+    return { operation: "write", paths: [event.input.source, event.input.destination] };
   }
   return null;
 }
@@ -103,6 +107,7 @@ const factory: ExtensionFactory = async (pi) => {
   const grants = new GrantStore();
 
   pi.registerTool(createDeleteTool(projectRoot));
+  pi.registerTool(createMoveTool(projectRoot));
 
   pi.on("tool_call", async (event, ctx) => {
     try {
