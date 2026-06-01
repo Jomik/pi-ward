@@ -11,6 +11,8 @@ export interface Rule {
 
 export interface ParsedRule {
   pattern: ParsedPattern;
+  /** The raw pattern string as it appeared in the config file. */
+  rawPattern: string;
   /** Always explicit — defaulted to "read" when omitted on the raw rule. */
   operations: Operation;
   effect: Effect;

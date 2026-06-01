@@ -189,6 +189,7 @@ async function parseConfigRules(
 
     results.push({
       pattern: parsedPattern,
+      rawPattern: rule.pattern,
       operations: rule.operations ?? "read",
       effect: rule.effect,
       configDir: parsedPattern.absoluteAnchored ? "/" : configDir,

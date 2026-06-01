@@ -32,6 +32,7 @@ function makeRule(
 ): ParsedRule {
   return {
     pattern: parsePattern(pattern),
+    rawPattern: pattern,
     operations: operations ?? "read",
     effect,
     configDir,
@@ -114,6 +115,60 @@ describe("GrantStore", () => {
     store.clear();
     expect(store.isAllowed("/a", "read")).toBe(false);
     expect(store.isDenied("/b", "read")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GrantStore.revoke
+// ---------------------------------------------------------------------------
+
+describe("GrantStore.revoke", () => {
+  it("removes an allow by exact path", () => {
+    const store = new GrantStore();
+    store.addAllow("/some/path", "read", false);
+    const removed = store.revoke("/some/path");
+    expect(removed).toBe(true);
+    expect(store.isAllowed("/some/path", "read")).toBe(false);
+  });
+
+  it("removes a deny by exact path", () => {
+    const store = new GrantStore();
+    store.addDeny("/some/path", "read", false);
+    const removed = store.revoke("/some/path");
+    expect(removed).toBe(true);
+    expect(store.isDenied("/some/path", "read")).toBe(false);
+  });
+
+  it("removes both allow and deny when both exist for the same path", () => {
+    const store = new GrantStore();
+    store.addAllow("/some/path", "read", false);
+    store.addDeny("/some/path", "write", false);
+    const removed = store.revoke("/some/path");
+    expect(removed).toBe(true);
+    expect(store.isAllowed("/some/path", "read")).toBe(false);
+    expect(store.isDenied("/some/path", "write")).toBe(false);
+  });
+
+  it("returns false when path is not in store", () => {
+    const store = new GrantStore();
+    const removed = store.revoke("/not/present");
+    expect(removed).toBe(false);
+  });
+
+  it("does not remove other paths", () => {
+    const store = new GrantStore();
+    store.addAllow("/keep/this", "read", false);
+    store.revoke("/other/path");
+    expect(store.isAllowed("/keep/this", "read")).toBe(true);
+  });
+
+  it("listAllows reflects removal", () => {
+    const store = new GrantStore();
+    store.addAllow("/a", "read", false);
+    store.addAllow("/b", "write", false);
+    store.revoke("/a");
+    expect(store.listAllows()).toHaveLength(1);
+    expect(store.listAllows()[0]?.path).toBe("/b");
   });
 });
 

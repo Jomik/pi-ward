@@ -1,8 +1,10 @@
-import { realpath, stat } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { ExtensionFactory, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
+import { wardCommandHandler } from "./command.js";
 import { loadConfig } from "./config.js";
+import { isDirectory } from "./fs-utils.js";
 import { GrantStore } from "./grants.js";
 import { checkPath } from "./guard.js";
 import type { Operation } from "./rules.js";
@@ -47,16 +49,6 @@ export function extractAccess(
   return null;
 }
 
-/** Check if a resolved path is a directory via stat. Returns false on any error. */
-async function isDirectory(resolvedPath: string): Promise<boolean> {
-  try {
-    const s = await stat(resolvedPath);
-    return s.isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 async function promptAccess(
   ctx: { hasUI: boolean; ui: { select(msg: string, options: string[]): Promise<string | undefined> } },
   toolName: string,
@@ -85,7 +77,7 @@ async function promptAccess(
     const scope = await ctx.ui.select("Deny scope:", ["Once", "For session"]);
     if (scope === "For session") {
       const dir = await isDirectory(resolvedPath);
-      grants.addDeny(resolvedPath, operation, dir);
+      grants.addDeny(resolvedPath, "read", dir);
     }
     return { block: true, reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user` };
   }
@@ -108,6 +100,13 @@ const factory: ExtensionFactory = async (pi) => {
 
   pi.registerTool(createDeleteTool(projectRoot));
   pi.registerTool(createMoveTool(projectRoot));
+
+  pi.registerCommand("ward", {
+    description: "Manage session access grants",
+    handler: async (args, ctx) => {
+      await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants, protectedPaths });
+    },
+  });
 
   pi.on("tool_call", async (event, ctx) => {
     try {
