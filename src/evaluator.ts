@@ -3,9 +3,11 @@ import { matches } from "./matcher.js";
 import type { Effect, Operation, ParsedRule } from "./rules.js";
 import { isDescendantOf } from "./walk.js";
 
-export type DenySource = "rule" | "baseline";
-
-export type EvaluateResult = { effect: "allow" } | { effect: "deny"; source: DenySource };
+export type EvaluateResult =
+  | { effect: "allow"; source: "rule"; pattern: string; configDir: string }
+  | { effect: "allow"; source: "baseline" }
+  | { effect: "deny"; source: "rule"; pattern: string; configDir: string }
+  | { effect: "deny"; source: "baseline" };
 
 /**
  * Does an operation level cover an incoming operation for a given effect?
@@ -71,9 +73,13 @@ export function evaluate(
       }
     }
 
-    return rule.effect === "allow" ? { effect: "allow" } : { effect: "deny", source: "rule" };
+    return rule.effect === "allow"
+      ? { effect: "allow", source: "rule", pattern: rule.rawPattern, configDir: rule.configDir }
+      : { effect: "deny", source: "rule", pattern: rule.rawPattern, configDir: rule.configDir };
   }
 
   // Baseline policy.
-  return isDescendantOf(projectRoot, absolutePath) ? { effect: "allow" } : { effect: "deny", source: "baseline" };
+  return isDescendantOf(projectRoot, absolutePath)
+    ? { effect: "allow", source: "baseline" }
+    : { effect: "deny", source: "baseline" };
 }

@@ -20,6 +20,7 @@ function rule(
 ): ParsedRule {
   return {
     pattern: parsePattern(pattern),
+    rawPattern: pattern,
     operations: operations ?? "read",
     effect,
     configDir,
@@ -65,6 +66,8 @@ describe("first-match-wins", () => {
     expect(evaluate(rules, "read", `${PROJECT_ROOT}/src/index.ts`, PROJECT_ROOT)).toEqual({
       effect: "deny",
       source: "rule",
+      pattern: "./",
+      configDir: PROJECT_ROOT,
     });
   });
 
@@ -158,7 +161,12 @@ describe("trust scoping", () => {
 
   it("deny rule works regardless of scope — from project config, denies outside path", () => {
     const rules: ParsedRule[] = [rule(".ssh/", "deny", PROJECT_ROOT)];
-    expect(evaluate(rules, "read", "/home/user/.ssh/id_rsa", PROJECT_ROOT)).toEqual({ effect: "deny", source: "rule" });
+    expect(evaluate(rules, "read", "/home/user/.ssh/id_rsa", PROJECT_ROOT)).toEqual({
+      effect: "deny",
+      source: "rule",
+      pattern: ".ssh/",
+      configDir: PROJECT_ROOT,
+    });
   });
 
   it("deny rule works regardless of scope — from project config, denies inside path (write-only)", () => {
@@ -166,16 +174,25 @@ describe("trust scoping", () => {
     expect(evaluate(rules, "write", `${PROJECT_ROOT}/.git/config`, PROJECT_ROOT)).toEqual({
       effect: "deny",
       source: "rule",
+      pattern: ".git/",
+      configDir: PROJECT_ROOT,
     });
   });
 
   it("deny rule is not subject to trust scoping", () => {
     const rules: ParsedRule[] = [rule("passwd", "deny", PROJECT_ROOT)];
-    expect(evaluate(rules, "read", "/etc/passwd", PROJECT_ROOT)).toEqual({ effect: "deny", source: "rule" });
+    expect(evaluate(rules, "read", "/etc/passwd", PROJECT_ROOT)).toEqual({
+      effect: "deny",
+      source: "rule",
+      pattern: "passwd",
+      configDir: PROJECT_ROOT,
+    });
     const insideRules: ParsedRule[] = [rule("index.ts", "deny", PROJECT_ROOT)];
     expect(evaluate(insideRules, "read", `${PROJECT_ROOT}/index.ts`, PROJECT_ROOT)).toEqual({
       effect: "deny",
       source: "rule",
+      pattern: "index.ts",
+      configDir: PROJECT_ROOT,
     });
   });
 });
@@ -202,6 +219,8 @@ describe("home-anchored patterns", () => {
     expect(evaluate(rules, "read", `${HOME_DIR}/.ssh/id_rsa`, PROJECT_ROOT)).toEqual({
       effect: "deny",
       source: "rule",
+      pattern: "~/.ssh/",
+      configDir: PROJECT_ROOT,
     });
   });
 
@@ -237,6 +256,8 @@ describe("absolute-anchored patterns — trust scoping with configDir=/", () => 
     expect(evaluate(rules, "read", "/tmp/forbidden/secret.key", PROJECT_ROOT)).toEqual({
       effect: "deny",
       source: "rule",
+      pattern: "/tmp/forbidden/",
+      configDir: "/",
     });
   });
 
@@ -259,7 +280,12 @@ describe("absolute-anchored patterns — trust scoping with configDir=/", () => 
 describe("rule interaction — absolute-allow with unanchored-deny", () => {
   it("deny .env* before allow /tmp/repos/ — denies .env inside allowed dir", () => {
     const rules: ParsedRule[] = [rule(".env*", "deny", "/"), rule("/tmp/repos/", "allow", "/", "read")];
-    expect(evaluate(rules, "read", "/tmp/repos/.env.local", PROJECT_ROOT)).toEqual({ effect: "deny", source: "rule" });
+    expect(evaluate(rules, "read", "/tmp/repos/.env.local", PROJECT_ROOT)).toEqual({
+      effect: "deny",
+      source: "rule",
+      pattern: ".env*",
+      configDir: "/",
+    });
   });
 
   it("allow /tmp/repos/ before deny .env* — allows .env inside allowed dir (first-match-wins)", () => {
@@ -269,6 +295,11 @@ describe("rule interaction — absolute-allow with unanchored-deny", () => {
 
   it("deny *.pem before allow /tmp/certs/ — denies .pem inside allowed dir", () => {
     const rules: ParsedRule[] = [rule("*.pem", "deny", "/"), rule("/tmp/certs/", "allow", "/", "read")];
-    expect(evaluate(rules, "read", "/tmp/certs/server.pem", PROJECT_ROOT)).toEqual({ effect: "deny", source: "rule" });
+    expect(evaluate(rules, "read", "/tmp/certs/server.pem", PROJECT_ROOT)).toEqual({
+      effect: "deny",
+      source: "rule",
+      pattern: "*.pem",
+      configDir: "/",
+    });
   });
 });

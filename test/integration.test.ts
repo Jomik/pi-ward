@@ -33,6 +33,7 @@ function makeRule(
 ): ParsedRule {
   return {
     pattern: parsePattern(pattern),
+    rawPattern: pattern,
     operations: operations ?? "read",
     effect,
     configDir,
@@ -119,6 +120,7 @@ describe("self-protection", () => {
     const rules: ParsedRule[] = [
       {
         pattern: parsePattern(`${resolvedProject}/`),
+        rawPattern: `${resolvedProject}/`,
         operations: "write",
         effect: "allow",
         configDir: "/",
@@ -357,6 +359,7 @@ describe("rule: absolute-anchored allow read (with symlink resolution)", () => {
     const rules: ParsedRule[] = [
       {
         pattern: parsePattern(`${resolvedTarget}/`),
+        rawPattern: `${resolvedTarget}/`,
         operations: "read",
         effect: "allow",
         configDir: "/",
@@ -387,6 +390,7 @@ describe("rule: absolute-anchored allow read (with symlink resolution)", () => {
       const rules: ParsedRule[] = [
         {
           pattern: parsePattern(`${resolvedSubdir}/`),
+          rawPattern: `${resolvedSubdir}/`,
           operations: "read",
           effect: "allow",
           configDir: "/",

@@ -220,6 +220,60 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 - Operation semantics mirror rules: a write grant covers read+write; a read deny blocks both.
 - When no UI is available (non-interactive mode), baseline denies remain blocked.
 
+### `/ward` Command (Proactive Session Grants)
+
+The interactive approval flow prompts per-file. The `/ward` slash command lets the user proactively grant or deny access for the current session — pre-populating the same in-memory grants that interactive approval creates.
+
+**Commands:**
+
+```
+/ward allow read ~/projects/work/     # grant read to directory + contents
+/ward allow write ~/projects/work/    # grant read+write
+/ward deny ~/projects/work/           # preemptive session deny
+/ward list                            # show active session grants/denies
+/ward revoke ~/projects/work/         # remove a grant (reverts to baseline)
+/ward status ~/some/path              # show what rules/grants apply to a path
+```
+
+**Semantics:**
+
+- Same constraints as interactive grants: cannot override explicit deny rules. Only baseline denies are grantable.
+- Directory patterns: trailing `/` covers the path and everything underneath.
+- Operation semantics: `write` implies read+write. `read` is read-only. Omitting the operation defaults to `read`.
+- Scope is always session — no persistence.
+- Path resolution: `~/` expanded at grant time. Symlinks resolved. Relative paths resolved from project root.
+- Literal paths and directory patterns only — no globs, no wildcards.
+
+**Evaluation order (unchanged):**
+
+Fits into the existing step 4a — session grants checked before prompting:
+
+1. Path resolution
+2. Self-protection check
+3. Rule evaluation (explicit deny → hard block, no override)
+4. Baseline deny?
+   - a. Check session grants → `/ward` grants live here
+   - b. Check session denies → `/ward deny` lives here
+   - c. Prompt user (if no grant/deny matches)
+5. Baseline allow → allow
+
+**`/ward list` output:**
+
+```
+Session grants:
+  allow read   ~/projects/work/          (directory)
+  deny  read   ~/secrets/                 (directory)
+  allow read   ~/notes/reference.md      (file)
+```
+
+**`/ward revoke`:**
+
+Removes the grant/deny from session state. Future access falls back to baseline → interactive prompt.
+
+**`/ward status <path>`:**
+
+Reports the evaluation result for a path: which rule or grant applies, what the outcome would be, and why. Useful for debugging "why was this blocked?"
+
 ## Non-Goals
 
 - **Bash command filtering** — pi-armory's responsibility.

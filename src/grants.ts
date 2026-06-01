@@ -50,6 +50,18 @@ export class GrantStore {
     return [...this.denies];
   }
 
+  /**
+   * Remove any allow or deny decision that matches `absolutePath` exactly.
+   * Returns true if at least one entry was removed.
+   */
+  revoke(absolutePath: string): boolean {
+    const beforeAllows = this.allows.length;
+    const beforeDenies = this.denies.length;
+    this.allows = this.allows.filter((d) => d.path !== absolutePath);
+    this.denies = this.denies.filter((d) => d.path !== absolutePath);
+    return this.allows.length < beforeAllows || this.denies.length < beforeDenies;
+  }
+
   /** Remove all decisions (for testing). */
   clear(): void {
     this.allows = [];
