@@ -34,6 +34,8 @@ Two logical operations, covering all file-touching tools:
 | `read` | read, grep, ls, find |
 | `write` | write, edit, delete |
 
+The `read`, `grep`, `ls`, and `find` tools are checked at the tool-call boundary against their path argument. For `grep`/`ls`/`find` this argument is a *root* the tool recurses from, so entry-point checking alone is insufficient — see [Recursive Read Tools](#recursive-read-tools-output-filtering).
+
 ### Rule Structure
 
 A rule specifies a pattern, which operations it governs, and what effect to apply:
@@ -167,6 +169,19 @@ Ward config files throughout the ancestor chain are always write-protected. This
 - The agent receives an actionable message: which path, which operation, and that it was blocked. It can inform the user rather than silently failing.
 - No filesystem I/O occurs — the block happens before execution.
 
+This pre-execution block applies to single-target tools (`read`, `write`, `edit`, `delete`, `move`) and to the *root argument* of the recursive read tools. The recursive read tools additionally filter their results after execution — see below.
+
+### Recursive Read Tools (Output Filtering)
+
+The `grep`, `find`, and `ls` tools take a search/listing root and recurse into it. Checking only the root argument is insufficient: a `grep` from an allowed root (e.g., the project root) recurses into a denied file (e.g., `.env`) and returns its matching line **contents** — exfiltrating data that a direct `read` of the same file would block. `find`/`ls` similarly leak entry names/paths under a denied subtree.
+
+Entry-point checking still applies (a denied root is blocked pre-execution), but for these tools ward adds a second layer: **post-execution output filtering**. After the tool runs, ward inspects its result and removes entries attributable to denied paths before the model sees them.
+
+- **grep** (implemented): each output line (`path:N: text` for matches, `path-N- text` for context) is attributed to its source file and dropped if that file is denied, reusing the same `checkPath` evaluation as pre-execution blocks. grep's structured result carries no per-file data, so the line text is parsed. To resist misattribution (filenames or matched content containing `:N: ` / `-N- `), every candidate split point is enumerated, each candidate is `stat`-verified against the filesystem, and **deny-wins**: a line survives only if every real-file candidate it could refer to is allowed. Unattributable lines are dropped fail-closed. A summary note reports how many matches in how many files were hidden. Single-file `grep` targets resolve via the file's parent directory (grep emits a bare basename); a filter error suppresses all output.
+- **find / ls** (planned): same mechanism — attribute each result entry to a path and drop denied ones. Metadata-only (names/paths), lower severity than grep's content leak.
+
+This is necessarily post-hoc: the tool executes, then ward redacts its result. It is a redaction layer, not a pre-execution block — the read happens, but denied content never reaches the model or the session transcript.
+
 ### Failure Modes
 
 - **Invalid JSON / schema error in any config:** fail-closed. Session refuses to start with a clear error.
@@ -178,6 +193,8 @@ Ward config files throughout the ancestor chain are always write-protected. This
 ### Threat Model Scope
 
 Ward checks policy before the tool executes. It does not control the tool's internal I/O implementation. Concurrent filesystem mutation by processes outside the agent (TOCTOU via symlink swaps between check and tool execution) is outside the threat model — ward protects against the agent's own actions, not against a hostile local environment racing the filesystem.
+
+The recursive-read output filter (see above) is inherently post-hoc: it `stat`-checks candidate paths *after* the tool produced its result. Its guarantee — a denied file's matched line is never surfaced — holds only when filesystem state is stable between tool execution and filtering. A same-prefix allowed file appearing (or a denied file disappearing) in that window could cause misattribution. This post-hoc race is an accepted limitation of redacting tool output, consistent with the TOCTOU scope above.
 
 ### Runtime Grants (Interactive Approval)
 
@@ -293,3 +310,4 @@ Reports the evaluation result for a path: which rule or grant applies, what the 
 6. Rules are pure data (JSON) — no executable logic in config.
 7. Any config error fails closed — never fails open.
 8. An empty or missing config results in the baseline policy (project-internal allowed, external denied).
+9. Recursive read tools (`grep`; `find`/`ls` planned) execute, but result lines/entries attributable to a denied path are redacted from the output before the model sees them, fail-closed (unattributable output is dropped).
