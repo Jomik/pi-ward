@@ -1,11 +1,13 @@
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
 import type { ExtensionFactory, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { wardCommandHandler } from "./command.js";
 import { loadConfig } from "./config.js";
 import { isDirectory } from "./fs-utils.js";
 import { GrantStore } from "./grants.js";
+import { filterGrepOutput } from "./grep-filter.js";
 import { checkPath } from "./guard.js";
 import type { Operation } from "./rules.js";
 import { getProtectedPaths, resolveProtectedPaths } from "./self-protect.js";
@@ -137,6 +139,52 @@ const factory: ExtensionFactory = async (pi) => {
     handler: async (args, ctx) => {
       await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants, protectedPaths });
     },
+  });
+
+  pi.on("tool_result", async (event, _ctx) => {
+    if (event.toolName !== "grep") return undefined;
+
+    try {
+      const inputPath = (event.input.path as string | undefined) ?? ".";
+      const resolvedInput = resolve(projectRoot, inputPath);
+
+      // Determine searchRoot: grep emits paths relative to its search target.
+      // When the target is a file, grep emits basename only, so searchRoot must
+      // be the file's parent directory. Fall back to treating path as a directory
+      // if stat fails (degrades to fail-closed dropping, not leaking).
+      // Note: divergence from resolveToCwd normalization (Unicode spaces, @-prefix)
+      // is acceptable — unresolvable paths are dropped, not leaked.
+      let searchRoot: string;
+      try {
+        const s = await stat(resolvedInput);
+        searchRoot = s.isDirectory() ? resolvedInput : dirname(resolvedInput);
+      } catch {
+        searchRoot = resolvedInput;
+      }
+
+      let anyChanged = false;
+      const newParts: typeof event.content = [];
+
+      for (const part of event.content) {
+        if (part.type !== "text") {
+          newParts.push(part);
+          continue;
+        }
+
+        const result = await filterGrepOutput(part.text, searchRoot, rules, projectRoot, protectedPaths, grants);
+
+        if (result.changed) anyChanged = true;
+        newParts.push({ type: "text", text: result.text });
+      }
+
+      if (!anyChanged) return undefined;
+
+      return { content: newParts };
+    } catch (_err) {
+      return {
+        content: [{ type: "text", text: "[pi-ward] grep output suppressed (filter error)" }],
+      };
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {
