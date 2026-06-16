@@ -18,6 +18,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../src/config.js";
+import { evaluate } from "../src/evaluator.js";
 
 const mockHomedir = vi.mocked(homedir);
 const mockGetAgentDir = vi.mocked(getAgentDir);
@@ -255,8 +256,8 @@ describe("ENOENT — silently skipped", () => {
     expect(result.rules).toEqual([]);
   });
 
-  it("skips missing ancestor config without throwing", async () => {
-    // Only project config exists; ancestor is absent
+  it("loads project-only config when global config is absent", async () => {
+    // Only project config exists; global config is absent
     await writeConfig(join(testProject, ".pi", "ward.json"), cfg([{ pattern: ".env*", effect: "deny" }]));
 
     const result = await loadConfig(testProject);
@@ -600,5 +601,236 @@ describe("home-anchored patterns — homeDir field and ~/ loading", () => {
     await writeConfig(join(testProject, ".pi", "ward.json"), cfg([{ pattern: "~/.ssh/", effect: "deny" }]));
 
     await expect(loadConfig(testProject)).resolves.toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// projectRoot condition — project config rejection
+// ---------------------------------------------------------------------------
+
+describe("projectRoot in project config is rejected", () => {
+  it("throws when a project config rule uses projectRoot", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: "~/other" }],
+    });
+
+    await expect(loadConfig(testProject, testHome)).rejects.toThrow(
+      /"projectRoot" is only allowed in the global config/,
+    );
+  });
+
+  it("includes rule index in projectRoot error message", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, {
+      rules: [
+        { pattern: ".env*", effect: "deny" },
+        { pattern: "*.pem", effect: "deny", projectRoot: "~/other" },
+      ],
+    });
+
+    await expect(loadConfig(testProject, testHome)).rejects.toThrow(/rule\[1\]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// projectRoot condition — global config loading and resolution
+// ---------------------------------------------------------------------------
+
+describe("projectRoot in global config", () => {
+  it("rule without projectRoot has projectRoots undefined", async () => {
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [{ pattern: ".env*", effect: "deny" }],
+    });
+
+    const result = await loadConfig(testProject, testHome);
+
+    expect(result.rules[0].projectRoots).toBeUndefined();
+  });
+
+  it("resolves ~/... projectRoot relative to homeDir", async () => {
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: "~/projects/myproject" }],
+    });
+
+    const result = await loadConfig(testProject, testHome);
+
+    const expected = await realpath(testProject);
+    expect(result.rules[0].projectRoots).toEqual([expected]);
+  });
+
+  it("resolves absolute projectRoot via realpath", async () => {
+    const realTestProject = await realpath(testProject);
+
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: testProject }],
+    });
+
+    const result = await loadConfig(testProject, testHome);
+
+    expect(result.rules[0].projectRoots).toEqual([realTestProject]);
+  });
+
+  it("resolves array projectRoot into array of resolved paths", async () => {
+    const realTestProject = await realpath(testProject);
+
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [
+        {
+          pattern: ".env*",
+          effect: "deny",
+          projectRoot: ["~/projects/myproject", testProject],
+        },
+      ],
+    });
+
+    const result = await loadConfig(testProject, testHome);
+
+    expect(result.rules[0].projectRoots).toHaveLength(2);
+    expect(result.rules[0].projectRoots).toEqual([realTestProject, realTestProject]);
+  });
+
+  it("throws when projectRoot value is a relative path (not ~/ or absolute)", async () => {
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: "relative/path" }],
+    });
+
+    await expect(loadConfig(testProject, testHome)).rejects.toThrow(/must be an absolute path or start with "~\/"/);
+  });
+
+  it("stores normalized path for nonexistent projectRoot (no error, fail-closed)", async () => {
+    const nonExistentPath = join(testHome, "projects", "does-not-exist");
+
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: nonExistentPath }],
+    });
+
+    // Should not throw — nonexistent path is stored as normalized form and simply never matches.
+    const result = await loadConfig(testProject, testHome);
+    expect(result.rules[0].projectRoots).toBeDefined();
+    expect(result.rules[0].projectRoots).toHaveLength(1);
+    expect(result.rules[0].projectRoots?.[0]).toContain("does-not-exist");
+  });
+
+  it("resolves ~/... projectRoot through a symlink", async () => {
+    const realProjectDir = join(testHome, "projects", "real-project");
+    await mkdir(realProjectDir, { recursive: true });
+    const linkProjectDir = join(testHome, "projects", "link-project");
+    await symlink(realProjectDir, linkProjectDir);
+
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: "~/projects/link-project" }],
+    });
+
+    const result = await loadConfig(testProject, testHome);
+
+    const expectedResolved = await realpath(linkProjectDir);
+    expect(result.rules[0].projectRoots).toEqual([expectedResolved]);
+  });
+
+  it("rule with projectRoot string stores projectRoots as single-element array", async () => {
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: testProject }],
+    });
+
+    const result = await loadConfig(testProject, testHome);
+
+    expect(Array.isArray(result.rules[0].projectRoots)).toBe(true);
+    expect(result.rules[0].projectRoots).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// projectRoot schema validation
+// ---------------------------------------------------------------------------
+
+describe("projectRoot schema validation", () => {
+  it("throws a schema error mentioning projectRoot when projectRoot is a number", async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: 42 }],
+    });
+
+    await expect(loadConfig(testProject, testHome)).rejects.toThrow(/projectRoot/);
+  });
+
+  it("throws a schema error when projectRoot is an empty array", async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: [] }],
+    });
+
+    await expect(loadConfig(testProject, testHome)).rejects.toThrow(/projectRoot/);
+  });
+
+  it("throws a schema error when projectRoot is an array containing a non-string", async () => {
+    const configPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(configPath, {
+      rules: [{ pattern: ".env*", effect: "deny", projectRoot: [42] }],
+    });
+
+    await expect(loadConfig(testProject, testHome)).rejects.toThrow(/projectRoot/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: loadConfig + evaluate with projectRoot-conditioned allow rule
+// ---------------------------------------------------------------------------
+
+describe("integration: loadConfig + evaluate with projectRoot-conditioned allow", () => {
+  it("matching projectRoot allows access to sibling/shared path outside active project", async () => {
+    const sharedLib = join(testHome, "projects", "shared-lib");
+    await mkdir(sharedLib, { recursive: true });
+
+    // Global config: allow ~/projects/shared-lib/ only when working in myproject
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [
+        {
+          pattern: "~/projects/shared-lib/",
+          effect: "allow",
+          operations: "read",
+          projectRoot: "~/projects/myproject",
+        },
+      ],
+    });
+
+    const { rules } = await loadConfig(testProject, testHome);
+
+    // projectRoots are realpath-resolved at load time; use realpath for the evaluate call too
+    const resolvedProject = await realpath(testProject);
+    const accessPath = join(testHome, "projects", "shared-lib", "src", "utils.ts");
+
+    expect(evaluate(rules, "read", accessPath, resolvedProject).effect).toBe("allow");
+  });
+
+  it("non-matching projectRoot: rule is skipped, baseline denies path outside active project", async () => {
+    const sharedLib = join(testHome, "projects", "shared-lib");
+    await mkdir(sharedLib, { recursive: true });
+
+    const otherProject = join(testHome, "projects", "other-project");
+    await mkdir(otherProject, { recursive: true });
+
+    // Same global config — rule scoped to myproject
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), {
+      rules: [
+        {
+          pattern: "~/projects/shared-lib/",
+          effect: "allow",
+          operations: "read",
+          projectRoot: "~/projects/myproject",
+        },
+      ],
+    });
+
+    const { rules } = await loadConfig(otherProject, testHome);
+
+    const resolvedOtherProject = await realpath(otherProject);
+    const accessPath = join(testHome, "projects", "shared-lib", "src", "utils.ts");
+
+    // Rule skipped (projectRoot doesn't match otherProject), baseline denies outside-project path
+    expect(evaluate(rules, "read", accessPath, resolvedOtherProject)).toEqual({
+      effect: "deny",
+      source: "baseline",
+    });
   });
 });

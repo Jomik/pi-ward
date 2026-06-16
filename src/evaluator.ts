@@ -59,6 +59,11 @@ export function evaluate(
   }
 
   for (const rule of rules) {
+    // 0. Project-root condition: skip rule if session's projectRoot doesn't match.
+    if (rule.projectRoots !== undefined) {
+      if (!rule.projectRoots.includes(projectRoot)) continue;
+    }
+
     // 1. Operation must cover the incoming operation.
     if (!ruleApplies(rule.effect, rule.operations, operation)) continue;
 

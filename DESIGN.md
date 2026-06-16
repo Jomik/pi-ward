@@ -97,7 +97,7 @@ Exactly two config files are loaded per session:
 
 Each is optional — ENOENT is silently skipped. Any other read error fails closed. Rules are concatenated in load order (global first, project last) into a single flat list. First match wins — global rules always take precedence.
 
-Sessions with a project root outside `~` load the global config and the project config only. No ancestor directories between `~` and the project root are consulted.
+Regardless of project location, only the global config and the project config are loaded. No ancestor directories are consulted.
 
 **Why global wins:** This inverts the "most-specific-wins" convention familiar from gitconfig or eslint. The inversion is deliberate: a security boundary must not allow untrusted inner configs to weaken trusted outer configs. Global rules are set by the user; project configs may come from cloned repos.
 The global config's scope is the home directory — it can allow access anywhere at or below `~`. Additionally, absolute-path patterns (starting with `/`) in the global config can allow access to paths outside `~` (e.g., `/tmp/pi-github-repos/`).
@@ -125,6 +125,47 @@ Example `~/.pi/agent/ward.json` (global config):
 ```
 
 This says: allow reading the skills directory from any project, deny `.env*` and `*.pem` everywhere, deny `~/.ssh`.
+
+### Project-Root Conditions (Global Config Only)
+
+Global rules may include an optional top-level `projectRoot` field (string or array of strings) to scope the rule to a specific project. A rule with `projectRoot` is skipped unless the active session's project root exactly matches the given path (or any path in the array). **Project configs may not use `projectRoot`** — this is a load-time error.
+
+Use cases:
+
+- **Sibling project access** — grant read/write access to a related repo only when the agent is working in a specific project:
+  ```json
+  {
+    "rules": [
+      {
+        "pattern": "~/projects/shared-lib/",
+        "effect": "allow",
+        "operations": "read",
+        "projectRoot": "~/projects/backend"
+      }
+    ]
+  }
+  ```
+  This allows the backend project to read `~/projects/shared-lib/` while any other project cannot.
+
+- **Multiple projects** — apply the same rule to a set of projects using an array:
+  ```json
+  {
+    "rules": [
+      {
+        "pattern": "~/projects/shared-lib/",
+        "effect": "allow",
+        "operations": "read",
+        "projectRoot": ["~/projects/backend", "~/projects/api"]
+      }
+    ]
+  }
+  ```
+
+**Path resolution:** `projectRoot` values are resolved at config load time. Both absolute paths and `~/`-prefixed home-relative paths are supported. Symlinks are resolved via `realpath`. A `projectRoot` value that does not exist on disk is stored as its normalized form — it will never match a real (realpath-resolved) session project root, so the rule condition is unsatisfiable. An unresolvable path (EACCES, ELOOP, etc.) is a load-time error.
+
+**Matching:** exact resolved path equality between the stored `projectRoot` and the session's `projectRoot`. No prefix/descendant matching — the project root must match exactly.
+
+**Rules without `projectRoot`** are unchanged — they apply to all projects as before.
 
 Example project-level `.pi/ward.json`:
 ```json

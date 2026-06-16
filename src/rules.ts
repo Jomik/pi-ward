@@ -7,6 +7,13 @@ export interface Rule {
   pattern: string;
   operations?: Operation;
   effect: Effect;
+  /**
+   * Optional project-root condition. Only valid in the global config.
+   * When set, the rule only applies when the active session's project root
+   * exactly matches this path (or any path in the array).
+   * Supports absolute paths and `~/`-prefixed home-relative paths.
+   */
+  projectRoot?: string | string[];
 }
 
 export interface ParsedRule {
@@ -20,4 +27,16 @@ export interface ParsedRule {
   configDir: string;
   /** Absolute path to the user's home directory (used for home-anchored patterns). */
   homeDir: string;
+  /**
+   * Resolved absolute paths for project-root conditions.
+   * When set, the rule only applies when the session's project root exactly
+   * matches one of these paths. `undefined` means no condition — the rule
+   * applies regardless of project root.
+   *
+   * Paths are resolved at config load time (symlinks expanded, `~/` expanded).
+   * A nonexistent path is stored as its normalized form and will simply never
+   * match a real project root (fail-closed: allow rules won't fire, deny rules
+   * won't fire either — the condition cannot be satisfied).
+   */
+  projectRoots?: string[];
 }

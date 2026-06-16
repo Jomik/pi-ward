@@ -59,6 +59,28 @@
                 "const": "deny"
               }
             ]
+          },
+          "projectRoot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              }
+            ],
+            "description": "When set, this rule only applies when the active session's project root exactly matches the given path (or any path in the array). Only valid in the global config (~/.pi/agent/ward.json). Supports absolute paths and `~/`-prefixed home-relative paths.",
+            "examples": [
+              "~/projects/backend",
+              [
+                "/home/user/projects/frontend",
+                "~/projects/backend"
+              ]
+            ]
           }
         }
       }

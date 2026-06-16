@@ -74,6 +74,25 @@ The `operations` field controls the access level a rule grants or restricts. It 
 
 Rules are evaluated top-to-bottom, first match wins. See [DESIGN.md](./DESIGN.md) for pattern syntax, trust scoping, and the full specification.
 
+### Project-Root–Scoped Rules (Global Config Only)
+
+Global rules may include a `projectRoot` field (string or string array) to restrict the rule to specific projects. A rule with `projectRoot` is only evaluated when the active session's project root exactly matches:
+
+```json
+{
+  "rules": [
+    {
+      "pattern": "~/projects/shared-lib/",
+      "effect": "allow",
+      "operations": "read",
+      "projectRoot": "~/projects/backend"
+    }
+  ]
+}
+```
+
+This allows `backend` to read `~/projects/shared-lib/` while any other project is denied by baseline. Pass an array to apply the same rule to multiple projects. Project configs may not use `projectRoot` — it is a load-time error. See [DESIGN.md](./DESIGN.md) for path resolution semantics and further examples.
+
 ## Design
 
 See [DESIGN.md](./DESIGN.md) for the full specification.

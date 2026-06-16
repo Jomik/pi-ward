@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import type { ParsedPattern } from "./pattern.js";
@@ -103,6 +103,50 @@ async function resolveAbsolutePattern(pattern: ParsedPattern): Promise<ParsedPat
 }
 
 /**
+ * Normalize and resolve a projectRoot condition value from a rule.
+ *
+ * - Supports `~/`-prefixed home-relative paths and absolute paths.
+ * - Relative paths (no `~/` and not absolute) are a load-time error.
+ * - Trailing slashes are stripped so the result compares cleanly against
+ *   the session's resolved projectRoot (which has no trailing slash).
+ * - Symlinks are resolved at load time via `resolveRealPath`.
+ * - ENOENT: the normalized path is stored as-is. It will never match a real
+ *   (realpath-resolved) project root, so the rule condition is effectively
+ *   unsatisfiable — fail-closed for allow rules, but also fail-closed for
+ *   deny rules (the deny condition simply never triggers).
+ * - Non-ENOENT errors (EACCES, ELOOP, …): fail closed at load time.
+ */
+async function resolveProjectRootValue(
+  value: string,
+  homeDir: string,
+  filePath: string,
+  ruleIdx: number,
+): Promise<string> {
+  let normalized: string;
+  if (value.startsWith("~/")) {
+    normalized = resolve(homeDir, value.slice(2));
+  } else if (isAbsolute(value)) {
+    normalized = resolve(value);
+  } else {
+    throw new Error(
+      `Config "${filePath}": rule[${ruleIdx}]: projectRoot "${value}" must be an absolute path or start with "~/".`,
+    );
+  }
+
+  // Resolve symlinks. Nonexistent paths resolve via ancestor walk-up (see resolveRealPath).
+  let real: string | null;
+  try {
+    real = await resolveRealPath(normalized);
+  } catch (err) {
+    throw new Error(
+      `Config "${filePath}": rule[${ruleIdx}]: cannot resolve projectRoot "${value}": ${(err as Error).message}`,
+    );
+  }
+  // null means no existing ancestor was found — store the normalized form.
+  return real ?? normalized;
+}
+
+/**
  * Parse validated rules into ParsedRules, attaching configDir and checking
  * for allow rules that can structurally never match within their scope.
  *
@@ -112,6 +156,8 @@ async function resolveAbsolutePattern(pattern: ParsedPattern): Promise<ParsedPat
  * - An allow rule has a "~/"-home-anchored pattern starting with ".." (escapes home dir)
  * - isGlobal is true and a rule uses a "./"-anchored pattern
  * - isGlobal is false and a rule uses an absolute-anchored pattern
+ * - isGlobal is false and a rule uses `projectRoot`
+ * - A `projectRoot` value is not absolute and does not start with `~/`
  */
 async function parseConfigRules(
   config: WardConfig,
@@ -187,6 +233,20 @@ async function parseConfigRules(
       }
     }
 
+    // projectRoot condition: only allowed in global config.
+    if (rule.projectRoot !== undefined && !isGlobal) {
+      throw new Error(
+        `Config "${filePath}": rule[${i}]: "projectRoot" is only allowed in the global config (~/.pi/agent/ward.json). ` +
+          `Project configs cannot use "projectRoot".`,
+      );
+    }
+
+    let projectRoots: string[] | undefined;
+    if (rule.projectRoot !== undefined) {
+      const rawRoots = Array.isArray(rule.projectRoot) ? rule.projectRoot : [rule.projectRoot];
+      projectRoots = await Promise.all(rawRoots.map((v) => resolveProjectRootValue(v, homeDir, filePath, i)));
+    }
+
     results.push({
       pattern: parsedPattern,
       rawPattern: rule.pattern,
@@ -194,6 +254,7 @@ async function parseConfigRules(
       effect: rule.effect,
       configDir: parsedPattern.absoluteAnchored ? "/" : configDir,
       homeDir,
+      ...(projectRoots !== undefined && { projectRoots }),
     });
   }
   return results;

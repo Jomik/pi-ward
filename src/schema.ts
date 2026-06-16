@@ -20,6 +20,13 @@ const RuleSchema = Type.Object({
   }),
   operations: Type.Optional(Type.Union([Type.Literal("read"), Type.Literal("write")])),
   effect: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
+  projectRoot: Type.Optional(
+    Type.Union([Type.String(), Type.Array(Type.String(), { minItems: 1 })], {
+      description:
+        "When set, this rule only applies when the active session's project root exactly matches the given path (or any path in the array). Only valid in the global config (~/.pi/agent/ward.json). Supports absolute paths and `~/`-prefixed home-relative paths.",
+      examples: ["~/projects/backend", ["/home/user/projects/frontend", "~/projects/backend"]],
+    }),
+  ),
 });
 
 export const WardConfigSchema = Type.Object({

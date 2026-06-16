@@ -17,6 +17,7 @@ function rule(
   configDir: string,
   operations?: "read" | "write",
   homeDir?: string,
+  projectRoots?: string[],
 ): ParsedRule {
   return {
     pattern: parsePattern(pattern),
@@ -25,6 +26,7 @@ function rule(
     effect,
     configDir,
     homeDir: homeDir ?? configDir,
+    ...(projectRoots !== undefined && { projectRoots }),
   };
 }
 
@@ -224,10 +226,10 @@ describe("home-anchored patterns", () => {
     });
   });
 
-  it("home-anchored allow from group config passes when path is within both homeDir and configDir", () => {
-    const groupConfigDir = "/home/user/projects";
-    const rules: ParsedRule[] = [rule("~/projects/shared/", "allow", groupConfigDir, "read", HOME_DIR)];
-    expect(effect(evaluate(rules, "read", `${groupConfigDir}/shared/lib.ts`, PROJECT_ROOT))).toBe("allow");
+  it("home-anchored allow passes when path is within both homeDir and configDir", () => {
+    const subConfigDir = "/home/user/projects";
+    const rules: ParsedRule[] = [rule("~/projects/shared/", "allow", subConfigDir, "read", HOME_DIR)];
+    expect(effect(evaluate(rules, "read", `${subConfigDir}/shared/lib.ts`, PROJECT_ROOT))).toBe("allow");
   });
 });
 
@@ -301,5 +303,86 @@ describe("rule interaction — absolute-allow with unanchored-deny", () => {
       pattern: "*.pem",
       configDir: "/",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// projectRoot condition
+// ---------------------------------------------------------------------------
+
+describe("projectRoot condition", () => {
+  it("rule with matching projectRoots applies", () => {
+    const rules: ParsedRule[] = [rule(".env*", "deny", PROJECT_ROOT, "read", undefined, [PROJECT_ROOT])];
+    expect(evaluate(rules, "read", `${PROJECT_ROOT}/.env.local`, PROJECT_ROOT)).toEqual({
+      effect: "deny",
+      source: "rule",
+      pattern: ".env*",
+      configDir: PROJECT_ROOT,
+    });
+  });
+
+  it("rule with non-matching projectRoots is skipped (falls through to baseline)", () => {
+    const otherProject = "/home/user/other-project";
+    const rules: ParsedRule[] = [rule(".env*", "deny", PROJECT_ROOT, "read", undefined, [otherProject])];
+    // .env* would deny if the rule applied; since projectRoot doesn't match, baseline allows inside project.
+    expect(effect(evaluate(rules, "read", `${PROJECT_ROOT}/.env.local`, PROJECT_ROOT))).toBe("allow");
+  });
+
+  it("array projectRoots: rule applies when session projectRoot matches any element", () => {
+    const otherProject = "/home/user/other-project";
+    const rules: ParsedRule[] = [rule(".env*", "deny", PROJECT_ROOT, "read", undefined, [otherProject, PROJECT_ROOT])];
+    expect(evaluate(rules, "read", `${PROJECT_ROOT}/.env.local`, PROJECT_ROOT)).toEqual({
+      effect: "deny",
+      source: "rule",
+      pattern: ".env*",
+      configDir: PROJECT_ROOT,
+    });
+  });
+
+  it("array projectRoots: rule skipped when no element matches", () => {
+    const rules: ParsedRule[] = [
+      rule(".env*", "deny", PROJECT_ROOT, "read", undefined, ["/home/user/project-a", "/home/user/project-b"]),
+    ];
+    expect(effect(evaluate(rules, "read", `${PROJECT_ROOT}/.env.local`, PROJECT_ROOT))).toBe("allow");
+  });
+
+  it("rule without projectRoots (undefined) applies to all projects", () => {
+    const r = rule(".env*", "deny", PROJECT_ROOT);
+    expect(r.projectRoots).toBeUndefined();
+    expect(evaluate([r], "read", `${PROJECT_ROOT}/.env.local`, PROJECT_ROOT)).toEqual({
+      effect: "deny",
+      source: "rule",
+      pattern: ".env*",
+      configDir: PROJECT_ROOT,
+    });
+  });
+
+  it("non-matching projectRoot: second rule (no condition) still applies", () => {
+    const otherProject = "/home/user/other-project";
+    const r1 = rule(".env*", "allow", PROJECT_ROOT, "read", undefined, [otherProject]);
+    const r2 = rule(".env*", "deny", PROJECT_ROOT);
+    // r1 is skipped (wrong project), r2 matches and denies
+    expect(evaluate([r1, r2], "read", `${PROJECT_ROOT}/.env.local`, PROJECT_ROOT)).toEqual({
+      effect: "deny",
+      source: "rule",
+      pattern: ".env*",
+      configDir: PROJECT_ROOT,
+    });
+  });
+
+  it("matching projectRoot: allow rule in global config grants access outside default project scope", () => {
+    const HOME_DIR = "/home/user";
+    // Simulates: global allow for ~/shared/ only when working in PROJECT_ROOT
+    const rules: ParsedRule[] = [rule("./", "allow", HOME_DIR, "write", HOME_DIR, [PROJECT_ROOT])];
+    // Access to path inside HOME_DIR/other — allowed when projectRoot matches
+    expect(effect(evaluate(rules, "read", `${HOME_DIR}/other/file.ts`, PROJECT_ROOT))).toBe("allow");
+  });
+
+  it("matching projectRoot with allow: non-matching projectRoot still denies", () => {
+    const HOME_DIR = "/home/user";
+    const otherProject = "/home/user/other-project";
+    const rules: ParsedRule[] = [rule("./", "allow", HOME_DIR, "write", HOME_DIR, [PROJECT_ROOT])];
+    // Same rule, but session is a different project — allow is skipped, falls to baseline deny
+    expect(effect(evaluate(rules, "read", `${HOME_DIR}/other/file.ts`, otherProject))).toBe("deny");
   });
 });
