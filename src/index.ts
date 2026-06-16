@@ -10,7 +10,6 @@ import { GrantStore } from "./grants.js";
 import { filterGrepOutput } from "./grep-filter.js";
 import { checkPath } from "./guard.js";
 import type { Operation } from "./rules.js";
-import { getProtectedPaths, resolveProtectedPaths } from "./self-protect.js";
 import { createDeleteTool } from "./tools/delete.js";
 import { createMoveTool } from "./tools/move.js";
 
@@ -100,7 +99,6 @@ const factory: ExtensionFactory = async (pi) => {
   const projectRoot = await realpath(process.cwd());
   const homeDir = await realpath(homedir());
   const { rules } = await loadConfig(projectRoot, homeDir);
-  const protectedPaths = await resolveProtectedPaths(getProtectedPaths(projectRoot, homeDir));
   const grants = new GrantStore();
 
   pi.registerTool(createDeleteTool(projectRoot));
@@ -137,7 +135,7 @@ const factory: ExtensionFactory = async (pi) => {
       return null;
     },
     handler: async (args, ctx) => {
-      await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants, protectedPaths });
+      await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants });
     },
   });
 
@@ -171,7 +169,7 @@ const factory: ExtensionFactory = async (pi) => {
           continue;
         }
 
-        const result = await filterGrepOutput(part.text, searchRoot, rules, projectRoot, protectedPaths, grants);
+        const result = await filterGrepOutput(part.text, searchRoot, rules, projectRoot, grants);
 
         if (result.changed) anyChanged = true;
         newParts.push({ type: "text", text: result.text });
@@ -197,15 +195,7 @@ const factory: ExtensionFactory = async (pi) => {
       const { operation, paths } = dispatch;
 
       for (const inputPath of paths) {
-        const result = await checkPath(
-          event.toolName,
-          inputPath,
-          operation,
-          rules,
-          projectRoot,
-          protectedPaths,
-          grants,
-        );
+        const result = await checkPath(event.toolName, inputPath, operation, rules, projectRoot, grants);
         if (result.allowed) continue;
         if (!result.grantable) return { block: true, reason: result.reason };
 

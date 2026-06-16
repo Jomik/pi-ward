@@ -185,7 +185,7 @@ describe("checkPath with grants", () => {
     const resolvedFile = await realpath(file);
     store.addAllow(resolvedFile, "read", false);
 
-    const result = await checkPath("read", file, "read", [], projectRoot, [], store);
+    const result = await checkPath("read", file, "read", [], projectRoot, store);
     expect(result.allowed).toBe(true);
   });
 
@@ -197,7 +197,7 @@ describe("checkPath with grants", () => {
     const resolvedFile = await realpath(file);
     store.addDeny(resolvedFile, "read", false);
 
-    const result = await checkPath("read", file, "read", [], projectRoot, [], store);
+    const result = await checkPath("read", file, "read", [], projectRoot, store);
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
       expect(result.grantable).toBe(false);
@@ -214,7 +214,7 @@ describe("checkPath with grants", () => {
     store.addAllow(resolvedFile, "read", false);
 
     const rules: ParsedRule[] = [makeRule(".env*", "deny", projectRoot)];
-    const result = await checkPath("read", file, "read", rules, projectRoot, [], store);
+    const result = await checkPath("read", file, "read", rules, projectRoot, store);
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
       expect(result.grantable).toBe(false);
@@ -226,7 +226,7 @@ describe("checkPath with grants", () => {
     const file = join(outsideDir, "file.txt");
     await writeFile(file, "data");
 
-    const result = await checkPath("read", file, "read", [], projectRoot, []);
+    const result = await checkPath("read", file, "read", [], projectRoot);
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
       expect(result.grantable).toBe(true);
@@ -243,7 +243,7 @@ describe("checkPath with grants", () => {
     const resolvedOutside = await realpath(outsideDir);
     store.addAllow(resolvedOutside, "write", true);
 
-    const result = await checkPath("write", file, "write", [], projectRoot, [], store);
+    const result = await checkPath("write", file, "write", [], projectRoot, store);
     expect(result.allowed).toBe(true);
   });
 });
@@ -261,7 +261,7 @@ describe("guard with grants", () => {
     const resolvedFile = await realpath(file);
     store.addAllow(resolvedFile, "read", false);
 
-    const result = await guard("read", [file], "read", [], projectRoot, [], store);
+    const result = await guard("read", [file], "read", [], projectRoot, store);
     expect(result.allowed).toBe(true);
   });
 
@@ -269,7 +269,7 @@ describe("guard with grants", () => {
     const file = join(outsideDir, "secret.txt");
     await writeFile(file, "secret");
 
-    const result = await guard("read", [file], "read", [], projectRoot, []);
+    const result = await guard("read", [file], "read", [], projectRoot);
     expect(result.allowed).toBe(false);
   });
 });

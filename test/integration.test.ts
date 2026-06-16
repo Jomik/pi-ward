@@ -50,7 +50,7 @@ describe("baseline — no rules", () => {
     const file = join(projectRoot, "index.ts");
     await writeFile(file, "");
 
-    const result = await guard("read", [file], "read", [], projectRoot, []);
+    const result = await guard("read", [file], "read", [], projectRoot);
 
     expect(result.allowed).toBe(true);
   });
@@ -59,7 +59,7 @@ describe("baseline — no rules", () => {
     const file = join(projectRoot, "output.txt");
     await writeFile(file, "");
 
-    const result = await guard("write", [file], "write", [], projectRoot, []);
+    const result = await guard("write", [file], "write", [], projectRoot);
 
     expect(result.allowed).toBe(true);
   });
@@ -68,7 +68,7 @@ describe("baseline — no rules", () => {
     const file = join(outsideDir, "secret.txt");
     await writeFile(file, "secret");
 
-    const result = await guard("read", [file], "read", [], projectRoot, []);
+    const result = await guard("read", [file], "read", [], projectRoot);
 
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
@@ -83,17 +83,32 @@ describe("baseline — no rules", () => {
 // ---------------------------------------------------------------------------
 
 describe("self-protection", () => {
-  it("denies write to a ward config file", async () => {
+  it("denies write to a project ward config file", async () => {
     const piDir = join(projectRoot, ".pi");
     const wardConfig = join(piDir, "ward.json");
     await mkdir(piDir, { recursive: true });
     await writeFile(wardConfig, '{"rules":[]}');
 
-    const result = await guard("write", [wardConfig], "write", [], projectRoot, [wardConfig]);
+    const result = await guard("write", [wardConfig], "write", [], projectRoot);
 
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
       expect(result.reason).toMatch(/\[pi-ward\]/);
+      expect(result.reason).toMatch(/ward config/i);
+    }
+  });
+
+  it("denies write to any .pi/ward.json path, even outside the project", async () => {
+    const piDir = join(outsideDir, ".pi");
+    const wardConfig = join(piDir, "ward.json");
+    await mkdir(piDir, { recursive: true });
+    await writeFile(wardConfig, '{"rules":[]}');
+
+    const rules: ParsedRule[] = [makeRule(`${outsideDir}/`, "allow", "/", "write", tempDir)];
+    const result = await guard("write", [wardConfig], "write", rules, projectRoot);
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
       expect(result.reason).toMatch(/ward config/i);
     }
   });
@@ -104,7 +119,7 @@ describe("self-protection", () => {
     await mkdir(piDir, { recursive: true });
     await writeFile(wardConfig, '{"rules":[]}');
 
-    const result = await guard("read", [wardConfig], "read", [], projectRoot, [wardConfig]);
+    const result = await guard("read", [wardConfig], "read", [], projectRoot);
 
     expect(result.allowed).toBe(true);
   });
@@ -128,7 +143,7 @@ describe("self-protection", () => {
       },
     ];
 
-    const result = await guard("write", [wardConfig], "write", rules, projectRoot, [wardConfig]);
+    const result = await guard("write", [wardConfig], "write", rules, projectRoot);
 
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
@@ -148,7 +163,7 @@ describe("rule: deny .env files", () => {
 
     const rules: ParsedRule[] = [makeRule(".env*", "deny", projectRoot, "read")];
 
-    const result = await guard("read", [envFile], "read", rules, projectRoot, []);
+    const result = await guard("read", [envFile], "read", rules, projectRoot);
 
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
@@ -163,7 +178,7 @@ describe("rule: deny .env files", () => {
 
     const rules: ParsedRule[] = [makeRule(".env*", "deny", projectRoot)];
 
-    const result = await guard("write", [envFile], "write", rules, projectRoot, []);
+    const result = await guard("write", [envFile], "write", rules, projectRoot);
 
     expect(result.allowed).toBe(false);
   });
@@ -174,14 +189,14 @@ describe("rule: deny .env files", () => {
 // ---------------------------------------------------------------------------
 
 describe("rule: allow read outside project root", () => {
-  it("allows read of file outside project when rule permits it", async () => {
+  it("allows read of file outside project when a global-style rule permits it", async () => {
     const file = join(outsideDir, "allowed.txt");
     await writeFile(file, "data");
 
-    // configDir = tempDir (parent of both project and outside) — simulates a group-level config
-    const rules: ParsedRule[] = [makeRule("./", "allow", tempDir, "read")];
+    // configDir = / simulates a global absolute-anchored allow rule.
+    const rules: ParsedRule[] = [makeRule(`${outsideDir}/`, "allow", "/", "read", tempDir)];
 
-    const result = await guard("read", [file], "read", rules, projectRoot, []);
+    const result = await guard("read", [file], "read", rules, projectRoot);
 
     expect(result.allowed).toBe(true);
   });
@@ -196,7 +211,7 @@ describe("broken symlink", () => {
     const link = join(projectRoot, "broken-link.txt");
     await symlink(join(projectRoot, "nonexistent.txt"), link);
 
-    const result = await guard("read", [link], "read", [], projectRoot, []);
+    const result = await guard("read", [link], "read", [], projectRoot);
 
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
@@ -216,7 +231,7 @@ describe("toolName variants", () => {
     await mkdir(join(projectRoot, "src"), { recursive: true });
     await writeFile(file, "");
 
-    const result = await guard("grep", [file], "read", [], projectRoot, []);
+    const result = await guard("grep", [file], "read", [], projectRoot);
 
     expect(result.allowed).toBe(true);
   });
@@ -225,7 +240,7 @@ describe("toolName variants", () => {
     const file = join(outsideDir, "secret.txt");
     await writeFile(file, "secret");
 
-    const result = await guard("grep", [file], "read", [], projectRoot, []);
+    const result = await guard("grep", [file], "read", [], projectRoot);
 
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
@@ -236,13 +251,13 @@ describe("toolName variants", () => {
   });
 
   it("guard with toolName 'find' and operation 'read' allows access within project root", async () => {
-    const result = await guard("find", [projectRoot], "read", [], projectRoot, []);
+    const result = await guard("find", [projectRoot], "read", [], projectRoot);
 
     expect(result.allowed).toBe(true);
   });
 
   it("guard with toolName 'find' and operation 'read' blocks access outside project root", async () => {
-    const result = await guard("find", [outsideDir], "read", [], projectRoot, []);
+    const result = await guard("find", [outsideDir], "read", [], projectRoot);
 
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
@@ -264,7 +279,7 @@ describe("multiple paths", () => {
     await writeFile(inside, "");
     await writeFile(outside, "secret");
 
-    const result = await guard("read", [inside, outside], "read", [], projectRoot, []);
+    const result = await guard("read", [inside, outside], "read", [], projectRoot);
 
     expect(result.allowed).toBe(false);
   });
@@ -275,7 +290,7 @@ describe("multiple paths", () => {
     await writeFile(a, "");
     await writeFile(b, "");
 
-    const result = await guard("read", [a, b], "read", [], projectRoot, []);
+    const result = await guard("read", [a, b], "read", [], projectRoot);
 
     expect(result.allowed).toBe(true);
   });
@@ -287,7 +302,7 @@ describe("multiple paths", () => {
     await writeFile(outside, "secret");
 
     // outside comes first in the list
-    const result = await guard("read", [outside, inside], "read", [], projectRoot, []);
+    const result = await guard("read", [outside, inside], "read", [], projectRoot);
 
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
@@ -314,7 +329,7 @@ describe("rule: home-anchored allow read within home", () => {
     // The home-anchored pattern ~/ .ssh/ resolves to homeDir/.ssh/
     const rules: ParsedRule[] = [makeRule("~/.ssh/", "allow", homeDir, "read", homeDir)];
 
-    const result = await guard("read", [keyFile], "read", rules, projectRoot, []);
+    const result = await guard("read", [keyFile], "read", rules, projectRoot);
 
     expect(result.allowed).toBe(true);
   });
@@ -329,7 +344,7 @@ describe("rule: home-anchored allow read within home", () => {
 
     const rules: ParsedRule[] = [makeRule("~/.ssh/", "allow", homeDir, "read", homeDir)];
 
-    const result = await guard("read", [secretFile], "read", rules, projectRoot, []);
+    const result = await guard("read", [secretFile], "read", rules, projectRoot);
 
     expect(result.allowed).toBe(false);
   });
@@ -369,7 +384,7 @@ describe("rule: absolute-anchored allow read (with symlink resolution)", () => {
 
     // Access via the symlink — guard resolves it to realpath, matching the rule.
     const fileViaLink = join(linkPath, "file.ts");
-    const result = await guard("read", [fileViaLink], "read", rules, projectRoot, []);
+    const result = await guard("read", [fileViaLink], "read", rules, projectRoot);
 
     expect(result.allowed).toBe(true);
   });
@@ -399,7 +414,7 @@ describe("rule: absolute-anchored allow read (with symlink resolution)", () => {
       ];
 
       // Access via the original (potentially symlinked) path
-      const result = await guard("read", [testFile], "read", rules, projectRoot, []);
+      const result = await guard("read", [testFile], "read", rules, projectRoot);
 
       expect(result.allowed).toBe(true);
     } finally {

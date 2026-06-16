@@ -63,9 +63,9 @@ function makeRule(
   };
 }
 
-async function run(args: string, grants: GrantStore, rules: ParsedRule[] = [], protectedPaths: string[] = []) {
+async function run(args: string, grants: GrantStore, rules: ParsedRule[] = []) {
   const ctx = makeCtx();
-  await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants, protectedPaths });
+  await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants });
   return ctx.notifications;
 }
 
@@ -194,9 +194,11 @@ describe("/ward allow", () => {
 
   it("rejects write grants to self-protected paths", async () => {
     const store = new GrantStore();
-    const protectedFile = join(outsideDir, "ward.json");
+    const protectedPiDir = join(outsideDir, ".pi");
+    await mkdir(protectedPiDir, { recursive: true });
+    const protectedFile = join(protectedPiDir, "ward.json");
     await writeFile(protectedFile, "{}");
-    const notes = await run(`allow write ${protectedFile}`, store, [], [protectedFile]);
+    const notes = await run(`allow write ${protectedFile}`, store);
     expect(notes[0]?.type).toBe("warning");
     expect(notes[0]?.message).toMatch(/ward config file/);
     expect(store.listAllows()).toHaveLength(0);
@@ -476,9 +478,11 @@ describe("/ward status", () => {
 
   it("reports self-protected write denial", async () => {
     const store = new GrantStore();
-    const file = join(projectRoot, "ward.json");
+    const piDir = join(projectRoot, ".pi");
+    await mkdir(piDir, { recursive: true });
+    const file = join(piDir, "ward.json");
     await writeFile(file, "{}");
-    const notes = await run(`status ${file}`, store, [], [file]);
+    const notes = await run(`status ${file}`, store);
     const msg = notes[0]?.message ?? "";
     expect(msg).toMatch(/write: denied \(ward config file/);
   });

@@ -123,57 +123,60 @@ describe("project config only", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multiple ancestor configs — correct order (global first)
+// Only global + project — ancestor configs are NOT loaded
 // ---------------------------------------------------------------------------
 
-describe("multiple ancestor configs", () => {
-  it("loads in order: global → home-ancestor → mid-ancestor → project", async () => {
-    // Global
+describe("only global + project configs are loaded", () => {
+  it("loads only global + project rules (ignores ancestor configs)", async () => {
     await writeConfig(join(testHome, ".pi", "agent", "ward.json"), cfg([{ pattern: "global", effect: "deny" }]));
-    // Home-level ancestor (~/.pi/ward.json)
+    // Ancestor config between home and project — should be ignored
     await writeConfig(join(testHome, ".pi", "ward.json"), cfg([{ pattern: "home-level", effect: "deny" }]));
-    // Mid ancestor (~/projects/.pi/ward.json)
     await writeConfig(join(testHome, "projects", ".pi", "ward.json"), cfg([{ pattern: "mid-level", effect: "deny" }]));
-    // Project
+    // Project config — should be loaded
     await writeConfig(join(testProject, ".pi", "ward.json"), cfg([{ pattern: "project-level", effect: "deny" }]));
 
     const result = await loadConfig(testProject);
 
-    expect(result.rules).toHaveLength(4);
-    // Patterns encoded as literal segments — retrieve the raw string via the segment value
+    expect(result.rules).toHaveLength(2);
     const patterns = result.rules.map((r) => {
       const seg = r.pattern.segments[0];
       return seg && seg.kind === "literal" ? seg.value : null;
     });
-    expect(patterns).toEqual(["global", "home-level", "mid-level", "project-level"]);
+    expect(patterns).toEqual(["global", "project-level"]);
   });
 
-  it("sets correct configDir for each ancestor", async () => {
+  it("configDirs are global (homedir) and project root only", async () => {
     await writeConfig(join(testHome, ".pi", "agent", "ward.json"), cfg([{ pattern: "global", effect: "deny" }]));
-    await writeConfig(join(testHome, ".pi", "ward.json"), cfg([{ pattern: "home-level", effect: "deny" }]));
-    await writeConfig(join(testHome, "projects", ".pi", "ward.json"), cfg([{ pattern: "mid-level", effect: "deny" }]));
     await writeConfig(join(testProject, ".pi", "ward.json"), cfg([{ pattern: "project-level", effect: "deny" }]));
 
     const result = await loadConfig(testProject);
 
     const configDirs = result.rules.map((r) => r.configDir);
-    expect(configDirs).toEqual([testHome, testHome, join(testHome, "projects"), testProject]);
+    expect(configDirs).toEqual([testHome, testProject]);
   });
-});
 
-// ---------------------------------------------------------------------------
-// projectRoot outside home — only global config loaded
-// ---------------------------------------------------------------------------
-
-describe("projectRoot outside home", () => {
-  it("loads only global config when projectRoot is outside homedir", async () => {
+  it("loads project config even when projectRoot is outside homedir", async () => {
     await writeConfig(join(testHome, ".pi", "agent", "ward.json"), cfg([{ pattern: "global", effect: "deny" }]));
 
-    // Use a path that is NOT inside testHome
     const outsideProject = join(tempBase, "other-project");
-    await mkdir(outsideProject, { recursive: true });
+    await mkdir(join(outsideProject, ".pi"), { recursive: true });
+    await writeConfig(join(outsideProject, ".pi", "ward.json"), cfg([{ pattern: "project-level", effect: "deny" }]));
 
     const result = await loadConfig(outsideProject);
+
+    expect(result.rules).toHaveLength(2);
+    const patterns = result.rules.map((r) => {
+      const seg = r.pattern.segments[0];
+      return seg && seg.kind === "literal" ? seg.value : null;
+    });
+    expect(patterns).toEqual(["global", "project-level"]);
+  });
+
+  it("loads only global when project config is absent", async () => {
+    await writeConfig(join(testHome, ".pi", "agent", "ward.json"), cfg([{ pattern: "global", effect: "deny" }]));
+    // No project config written
+
+    const result = await loadConfig(testProject);
 
     expect(result.rules).toHaveLength(1);
     expect(result.rules[0].configDir).toBe(testHome);
@@ -362,13 +365,6 @@ describe("absolute-anchored patterns", () => {
   it("throws when a non-global config contains an absolute-anchored pattern", async () => {
     const configPath = join(testProject, ".pi", "ward.json");
     await writeConfig(configPath, cfg([{ pattern: "/tmp/foo/", effect: "allow" }]));
-
-    await expect(loadConfig(testProject)).rejects.toThrow(/absolute-path pattern.*only allowed in the global config/);
-  });
-
-  it("throws for absolute-anchored pattern in an ancestor (non-global) config", async () => {
-    const configPath = join(testHome, ".pi", "ward.json");
-    await writeConfig(configPath, cfg([{ pattern: "/tmp/logs/", effect: "deny" }]));
 
     await expect(loadConfig(testProject)).rejects.toThrow(/absolute-path pattern.*only allowed in the global config/);
   });
@@ -602,12 +598,6 @@ describe("home-anchored patterns — homeDir field and ~/ loading", () => {
 
   it("non-global (project) config with ~/ pattern loads successfully", async () => {
     await writeConfig(join(testProject, ".pi", "ward.json"), cfg([{ pattern: "~/.ssh/", effect: "deny" }]));
-
-    await expect(loadConfig(testProject)).resolves.toBeDefined();
-  });
-
-  it("non-global (ancestor) config with ~/ pattern loads successfully", async () => {
-    await writeConfig(join(testHome, ".pi", "ward.json"), cfg([{ pattern: "~/.config/", effect: "deny" }]));
 
     await expect(loadConfig(testProject)).resolves.toBeDefined();
   });

@@ -53,7 +53,7 @@ describe("filterGrepOutput", () => {
 
     const text = [matchLine("src.ts", 1, "export const x = 1;")].join("\n");
 
-    const result = await filterGrepOutput(text, projectRoot, [], projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, [], projectRoot);
 
     expect(result.dropped).toBe(0);
     expect(result.files).toBe(0);
@@ -72,7 +72,7 @@ describe("filterGrepOutput", () => {
       matchLine("allowed.ts", 3, "export const x = 1;"),
     ].join("\n");
 
-    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot, [], undefined);
+    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot);
 
     // Denied .env line must be removed
     expect(result.text).not.toContain("SECRET_KEY");
@@ -98,7 +98,7 @@ describe("filterGrepOutput", () => {
       matchLine(".env", 2, 'DB_PASSWORD="hunter2"'),
     ].join("\n");
 
-    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot);
 
     expect(result.text).not.toContain("SECRET_KEY");
     expect(result.text).not.toContain("DB_PASSWORD");
@@ -123,7 +123,7 @@ describe("filterGrepOutput", () => {
       matchLine("ok.ts", 5, "const x = 1;"),
     ].join("\n");
 
-    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot);
 
     expect(result.dropped).toBe(3);
     expect(result.files).toBe(2);
@@ -144,7 +144,7 @@ describe("filterGrepOutput", () => {
       matchLine("ok.ts", 1, "const x = 1;"),
     ].join("\n");
 
-    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot);
 
     expect(result.dropped).toBe(3);
     expect(result.text).not.toContain(".env");
@@ -161,7 +161,7 @@ describe("filterGrepOutput", () => {
       "[100 matches limit reached. Use limit=200 for more]",
     ].join("\n");
 
-    const result = await filterGrepOutput(text, projectRoot, [], projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, [], projectRoot);
 
     // No policy denials — dropped count stays 0
     expect(result.dropped).toBe(0);
@@ -178,7 +178,7 @@ describe("filterGrepOutput", () => {
 
     const text = [matchLine(".env", 1, "A=1"), matchLine(".env", 2, "B=2"), matchLine(".env", 3, "C=3")].join("\n");
 
-    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot);
 
     expect(result.dropped).toBe(3);
     // All 3 lines from the same file — still counts as 1 distinct file
@@ -192,7 +192,7 @@ describe("filterGrepOutput", () => {
     const rules: ParsedRule[] = [denyRule(".env", projectRoot)];
     const text = matchLine(".env", 1, "SECRET=x");
 
-    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot);
 
     expect(result.dropped).toBe(1);
     expect(result.text).toBe("[pi-ward] 1 match in 1 protected file hidden");
@@ -201,7 +201,7 @@ describe("filterGrepOutput", () => {
   it("preserves trailing newline: changed is false when all lines are allowed", async () => {
     await writeFile(join(projectRoot, "a.ts"), "const x = 1;");
     const input = "a.ts:1: const x = 1;\n";
-    const result = await filterGrepOutput(input, projectRoot, [], projectRoot, []);
+    const result = await filterGrepOutput(input, projectRoot, [], projectRoot);
     expect(result.changed).toBe(false);
     expect(result.text).toBe(input);
   });
@@ -214,7 +214,7 @@ describe("filterGrepOutput", () => {
 
     // searchRoot is the subdirectory, output contains a bare filename (relative to subdir)
     const text = matchLine("file.ts", 1, "const x = 1;");
-    const result = await filterGrepOutput(text, subDir, [], projectRoot, []);
+    const result = await filterGrepOutput(text, subDir, [], projectRoot);
 
     expect(result.dropped).toBe(0);
     expect(result.text).toBe(text);
@@ -230,7 +230,7 @@ describe("filterGrepOutput", () => {
     const text = matchLine("secret.txt", 1, "topsecret");
 
     // No explicit rules — baseline deny for outside project root
-    const result = await filterGrepOutput(text, outsideDir, [], projectRoot, []);
+    const result = await filterGrepOutput(text, outsideDir, [], projectRoot);
 
     expect(result.dropped).toBe(1);
     expect(result.text).not.toContain("topsecret");
@@ -258,7 +258,7 @@ describe("grep filter — .env content exfiltration scenario", () => {
       matchLine("src/index.ts", 1, "export default {};"),
     ].join("\n");
 
-    const result = await filterGrepOutput(grepOutput, projectRoot, rules, projectRoot, []);
+    const result = await filterGrepOutput(grepOutput, projectRoot, rules, projectRoot);
 
     // The secret must NOT appear in output
     expect(result.text).not.toContain('SECRET_KEY="this should be secret"');
@@ -284,7 +284,7 @@ describe("grep filter — adversarial hardening", () => {
 
     // grep output line for this file
     const text = `${weirdName}:1: SECRET=x`;
-    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot);
 
     // The secret must NOT appear in the output
     expect(result.text).not.toContain("SECRET=x");
@@ -301,7 +301,7 @@ describe("grep filter — adversarial hardening", () => {
 
     // No deny rules — code.ts is allowed
     const text = 'code.ts:1: const t = "a:5: b";';
-    const result = await filterGrepOutput(text, projectRoot, [], projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, [], projectRoot);
 
     // Line must be KEPT; content colon does not cause misparse or drop
     expect(result.dropped).toBe(0);
@@ -320,7 +320,7 @@ describe("grep filter — adversarial hardening", () => {
     // searchRoot = dirname of the target file (as index.ts computes it)
     const rules: ParsedRule[] = [denyRule(".env", projectRoot)];
     const text = ".env:1: SECRET=x";
-    const result = await filterGrepOutput(text, secretDir, rules, projectRoot, []);
+    const result = await filterGrepOutput(text, secretDir, rules, projectRoot);
 
     expect(result.dropped).toBe(1);
     expect(result.text).not.toContain("SECRET=x");
@@ -334,7 +334,7 @@ describe("grep filter — adversarial hardening", () => {
 
     // searchRoot = dirname of the target file
     const text = "utils.ts:1: export const x = 1;";
-    const result = await filterGrepOutput(text, srcDir, [], projectRoot, []);
+    const result = await filterGrepOutput(text, srcDir, [], projectRoot);
 
     expect(result.dropped).toBe(0);
     expect(result.text).toContain("export const x = 1;");
@@ -347,7 +347,7 @@ describe("grep filter — adversarial hardening", () => {
 
     const text = [matchLine("ok.ts", 1, "const x = 1;"), "This line has no grep-format separator at all"].join("\n");
 
-    const result = await filterGrepOutput(text, projectRoot, [], projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, [], projectRoot);
 
     // Policy count: 0 (unattributable is not a policy denial)
     expect(result.dropped).toBe(0);
@@ -371,7 +371,7 @@ describe("grep filter — adversarial hardening", () => {
 
     const rules: ParsedRule[] = [denyRule("weird-2- name.env", projectRoot)];
     const text = "weird-2- name.env:1: SECRET=x";
-    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot, []);
+    const result = await filterGrepOutput(text, projectRoot, rules, projectRoot);
 
     expect(result.text).not.toContain("SECRET=x");
     expect(result.dropped).toBe(1);
@@ -387,7 +387,7 @@ describe("grep filter — adversarial hardening", () => {
     await writeFile(outsidePath, "TOPSECRET");
 
     const line = `${outsidePath}:1: TOPSECRET`;
-    const result = await filterGrepOutput(line, projectRoot, [], projectRoot, []);
+    const result = await filterGrepOutput(line, projectRoot, [], projectRoot);
 
     expect(result.text).not.toContain("TOPSECRET");
     expect(result.dropped).toBe(1);

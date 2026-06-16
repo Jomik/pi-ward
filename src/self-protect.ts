@@ -1,57 +1,26 @@
-import { realpath } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { ancestorDirs } from "./walk.js";
-
-/**
- * Returns all ward config file paths that are always write-protected.
- *
- * Protected paths (mirrors the loadConfig walk order):
- * - `~/.pi/agent/ward.json` (global config, always protected)
- * - `<dir>/.pi/ward.json` for each directory from homedir to projectRoot (inclusive)
- *
- * If projectRoot is outside homedir, only the global config path is returned.
- */
-export function getProtectedPaths(projectRoot: string, homeDir?: string): string[] {
-  const home = homeDir ?? homedir();
-
-  // Global config is always protected.
-  const paths = [join(getAgentDir(), "ward.json")];
-
-  // Walk ancestor directories from home to projectRoot (mirrors loadConfig walk).
-  // ancestorDirs returns [] when projectRoot is outside home, so this is a no-op in that case.
-  const dirs = ancestorDirs(home, projectRoot);
-  for (const dir of dirs) {
-    paths.push(join(dir, ".pi", "ward.json"));
-  }
-
-  return paths;
-}
-
-/**
- * Resolves each protected path via realpath.
- * On any error (ENOENT, EACCES, etc.), keeps the constructed path as a fallback
- * so the path remains protected even when unresolvable.
- */
-export async function resolveProtectedPaths(paths: string[]): Promise<string[]> {
-  const resolved: string[] = [];
-  for (const p of paths) {
-    try {
-      resolved.push(await realpath(p));
-    } catch {
-      resolved.push(p);
-    }
-  }
-  return resolved;
-}
 
 /**
  * Returns true if the given absolute path is a protected ward config file.
  *
- * Protected config files are always write-denied regardless of rules —
- * the agent cannot modify its own access controls.
+ * Two categories are always write-protected:
+ *
+ * 1. The global config — `~/.pi/agent/ward.json` (exact path match).
+ * 2. Any path of the form `<anything>/.pi/ward.json` — covers the project config
+ *    and any other `.pi/ward.json` regardless of location. Protects nonexistent
+ *    paths too (creation is denied), so the agent cannot create a ward config
+ *    it could later exploit.
+ *
+ * The check is applied to the resolved (realpath'd) absolute path so symlinks
+ * cannot bypass it for real files. For new-file writes the path is resolved
+ * through the nearest existing ancestor, preserving the `.pi/ward.json` suffix.
  */
-export function isSelfProtected(absolutePath: string, protectedPaths: string[]): boolean {
-  return protectedPaths.includes(absolutePath);
+export function isSelfProtected(absolutePath: string): boolean {
+  // Protect the global config explicitly (structure is .pi/agent/ward.json,
+  // not .pi/ward.json, so the structural predicate below does not cover it).
+  if (absolutePath === join(getAgentDir(), "ward.json")) return true;
+
+  // Protect any .../.pi/ward.json path structurally.
+  return basename(absolutePath) === "ward.json" && basename(dirname(absolutePath)) === ".pi";
 }

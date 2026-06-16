@@ -56,7 +56,6 @@ export interface FilterGrepOutputResult {
  *                    that the basename-only path grep emits resolves correctly.
  * @param rules       Parsed access rules.
  * @param projectRoot Absolute project root path.
- * @param protectedPaths Absolute paths of ward config files (write-protected).
  * @param grants      Optional session grant store.
  *
  *
@@ -73,7 +72,6 @@ export async function filterGrepOutput(
   searchRoot: string,
   rules: ParsedRule[],
   projectRoot: string,
-  protectedPaths: string[],
   grants?: GrantStore,
 ): Promise<FilterGrepOutputResult> {
   const lines = text.split("\n");
@@ -110,7 +108,7 @@ export async function filterGrepOutput(
       // biome-ignore lint/style/noNonNullAssertion: cache.has guarantees presence
       return allowCache.get(absPath)!;
     }
-    const result = await checkPath("grep", absPath, "read", rules, projectRoot, protectedPaths, grants);
+    const result = await checkPath("grep", absPath, "read", rules, projectRoot, grants);
     allowCache.set(absPath, result.allowed);
     return result.allowed;
   }

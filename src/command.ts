@@ -18,7 +18,6 @@ export interface WardCommandDeps {
   projectRoot: string;
   homeDir: string;
   grants: GrantStore;
-  protectedPaths: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +87,7 @@ async function handleAllow(rest: string, deps: WardCommandDeps, ctx: CommandCont
     return;
   }
 
-  if (operation === "write" && isSelfProtected(resolved.path, deps.protectedPaths)) {
+  if (operation === "write" && isSelfProtected(resolved.path)) {
     ctx.ui.notify(`Cannot grant write: ${rawPath} is a ward config file (write-protected)`, "warning");
     return;
   }
@@ -249,7 +248,7 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
     const evalResult = evaluate(deps.rules, op, resolved.path, deps.projectRoot);
 
     // Self-protection check for write operations.
-    if (op === "write" && isSelfProtected(resolved.path, deps.protectedPaths)) {
+    if (op === "write" && isSelfProtected(resolved.path)) {
       lines.push(`  write: denied (ward config file — write-protected)`);
       continue;
     }

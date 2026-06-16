@@ -69,7 +69,7 @@ Minimal pattern syntax:
 | `*.pem` | Matches any segment ending with `.pem` | `cert.pem` ✓, `foo/bar/key.pem` ✓ |
 | `*` | Matches any single segment | any file or directory name ✓ |
 | `.secret/` | Trailing `/` — matches the directory and anything under it at any depth | `.secret` ✓, `.secret/x` ✓, `foo/.secret/key.pem` ✓ |
-| `./` | Everything at or below the config's directory | (used in group-level configs to allow sibling access) |
+| `./` | Everything at or below the config's directory | (used to allow access to the full project tree) |
 | `./.secret/` | `./` anchors to the config's directory | `.secret/x` ✓, `foo/.secret/x` ✗ |
 | `./src/*.ts` | `*` works within any segment in an anchored path | `src/index.ts` ✓, `src/lib/foo.ts` ✗ |
 | `~/.ssh/` | `~/` anchors to the home directory (absolute) | `~/.ssh/id_rsa` ✓, `/tmp/.ssh/key` ✗ |
@@ -90,17 +90,14 @@ Rules:
 
 ### Configuration
 
-Rules are loaded by walking the directory tree from global toward the project root. Each `.pi/ward.json` found along the path contributes rules.
+Exactly two config files are loaded per session:
 
-**Walk algorithm:**
+1. `~/.pi/agent/ward.json` — **global config**, configDir = home directory.
+2. `<projectRoot>/.pi/ward.json` — **project config**, configDir = project root.
 
-1. Load `~/.pi/agent/ward.json` (global config, fixed location).
-2. Starting from the home directory, walk toward the project root. At each ancestor directory, check for `.pi/ward.json` and load it if present.
-3. Load the project root's own `.pi/ward.json` last.
+Each is optional — ENOENT is silently skipped. Any other read error fails closed. Rules are concatenated in load order (global first, project last) into a single flat list. First match wins — global rules always take precedence.
 
-The walk does not extend above the home directory. Sessions with a project root outside `~` use only the global config.
-
-Rules are concatenated in load order (global first, project last) into a single flat list. First match wins — global rules always take precedence.
+Sessions with a project root outside `~` load the global config and the project config only. No ancestor directories between `~` and the project root are consulted.
 
 **Why global wins:** This inverts the "most-specific-wins" convention familiar from gitconfig or eslint. The inversion is deliberate: a security boundary must not allow untrusted inner configs to weaken trusted outer configs. Global rules are set by the user; project configs may come from cloned repos.
 The global config's scope is the home directory — it can allow access anywhere at or below `~`. Additionally, absolute-path patterns (starting with `/`) in the global config can allow access to paths outside `~` (e.g., `/tmp/pi-github-repos/`).
@@ -110,8 +107,7 @@ The global config's scope is the home directory — it can allow access anywhere
 A config can `deny` any path regardless of scope.
 
 - Global config's trust scope is the home directory — it can `allow` within `~`, and `deny` any path. Absolute-anchored allow rules (prefix `/`) use `/` as their trust scope, meaning they can match any absolute path; they are restricted to the global config only for security.
-- `~/projects/private/.pi/ward.json` can allow access within `~/projects/private/`.
-- A leaf project config can only allow within its own tree (which the baseline already grants).
+- Project config's trust scope is the project root — it can `allow` access within the project tree.
 - An `allow` rule that can never take effect (pattern structurally references outside the config's scope) is a load-time error.
 - `./` patterns are rejected in the global config at load time (use `~/` or unanchored patterns instead).
 
@@ -129,17 +125,6 @@ Example `~/.pi/agent/ward.json` (global config):
 ```
 
 This says: allow reading the skills directory from any project, deny `.env*` and `*.pem` everywhere, deny `~/.ssh`.
-
-Example `~/projects/private/.pi/ward.json` (group level):
-```json
-{
-  "rules": [
-    { "pattern": "./", "effect": "allow" }
-  ]
-}
-```
-
-This says: any project under `~/projects/private/` can read anything else under `~/projects/private/`.
 
 Example project-level `.pi/ward.json`:
 ```json
@@ -162,7 +147,7 @@ Before matching, all paths are resolved:
 
 ### Self-Protection
 
-Ward config files throughout the ancestor chain are always write-protected. This is a built-in invariant — the agent cannot modify its own access controls. (Deletion/renaming of config files can only happen via bash, which is pi-armory's responsibility.)
+Any file matching the pattern `<dir>/.pi/ward.json` — at any location in the filesystem — is always write-protected. The global config (`~/.pi/agent/ward.json`) is also explicitly protected. This broad structural predicate means the agent cannot create a new config file at a location it could later exploit, and cannot weaken its own constraints by modifying any config. (Deletion/renaming of config files can only happen via bash, which is pi-armory's responsibility.)
 
 ### Behavior on Block
 

@@ -36,7 +36,7 @@ When a path outside the project root is accessed and no explicit deny rule match
 
 ## Config
 
-Rules are loaded from `~/.pi/agent/ward.json` (global) and `.pi/ward.json` files along the directory tree. Global rules always take precedence — inner configs can't weaken outer ones.
+Rules are loaded from exactly two locations: `~/.pi/agent/ward.json` (global) and `<projectRoot>/.pi/ward.json` (project). Global rules are loaded first and always take precedence — the project config cannot weaken the global config.
 
 Example `.pi/ward.json`:
 

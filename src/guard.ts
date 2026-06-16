@@ -23,7 +23,6 @@ export async function checkPath(
   operation: Operation,
   rules: ParsedRule[],
   projectRoot: string,
-  protectedPaths: string[],
   grants?: GrantStore,
 ): Promise<GuardResult> {
   const resolved = await resolvePath(inputPath, projectRoot);
@@ -36,7 +35,7 @@ export async function checkPath(
     };
   }
 
-  if (operation === "write" && isSelfProtected(resolved.path, protectedPaths)) {
+  if (operation === "write" && isSelfProtected(resolved.path)) {
     return {
       allowed: false,
       reason: `[pi-ward] Blocked ${toolName} (write) on ${inputPath}: ward config file is write-protected`,
@@ -92,11 +91,10 @@ export async function guard(
   operation: Operation,
   rules: ParsedRule[],
   projectRoot: string,
-  protectedPaths: string[],
   grants?: GrantStore,
 ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
   for (const inputPath of paths) {
-    const result = await checkPath(toolName, inputPath, operation, rules, projectRoot, protectedPaths, grants);
+    const result = await checkPath(toolName, inputPath, operation, rules, projectRoot, grants);
     if (!result.allowed) {
       return { allowed: false, reason: result.reason };
     }

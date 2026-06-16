@@ -8,7 +8,7 @@ import { parsePattern } from "./pattern.js";
 import { resolveRealPath } from "./resolve.js";
 import type { ParsedRule, Rule } from "./rules.js";
 import { WardConfigSchema } from "./schema.js";
-import { ancestorDirs, isDescendantOf } from "./walk.js";
+import { isDescendantOf } from "./walk.js";
 
 export interface WardConfig {
   rules: Rule[];
@@ -200,14 +200,11 @@ async function parseConfigRules(
 }
 
 /**
- * Load all ward configs for a given project root.
+ * Load ward configs for a given project root.
  *
- * Walk order (global first, project last):
+ * Load order (global first, project last):
  * 1. `~/.pi/agent/ward.json` — global config, configDir = homedir
- * 2. `<dir>/.pi/ward.json` for each ancestor from homedir toward projectRoot
- * 3. `projectRoot/.pi/ward.json` — project config, configDir = projectRoot
- *
- * If projectRoot is outside homedir, only the global config is loaded.
+ * 2. `<projectRoot>/.pi/ward.json` — project config, configDir = projectRoot
  *
  * ENOENT on any config file is silently skipped. Any other error fails closed.
  */
@@ -222,15 +219,11 @@ export async function loadConfig(projectRoot: string, homeDir?: string): Promise
     allRules.push(...(await parseConfigRules(globalConfig, home, globalConfigPath, home, true)));
   }
 
-  // Steps 2+3: walk ancestor directories from home to projectRoot (inclusive).
-  // ancestorDirs returns [] when projectRoot is outside home, so this is a no-op in that case.
-  const dirs = ancestorDirs(home, projectRoot);
-  for (const dir of dirs) {
-    const configPath = join(dir, ".pi", "ward.json");
-    const config = await readConfigFile(configPath);
-    if (config !== null) {
-      allRules.push(...(await parseConfigRules(config, dir, configPath, home)));
-    }
+  // Step 2: project config
+  const projectConfigPath = join(projectRoot, ".pi", "ward.json");
+  const projectConfig = await readConfigFile(projectConfigPath);
+  if (projectConfig !== null) {
+    allRules.push(...(await parseConfigRules(projectConfig, projectRoot, projectConfigPath, home)));
   }
 
   return { rules: allRules };
