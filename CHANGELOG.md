@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/Jomik/pi-ward/compare/v0.2.0...v0.3.0) (2026-08-30)
+
+
+### Features
+
+* add projectRoot-scoped global ward rules ([991b16d](https://github.com/Jomik/pi-ward/commit/991b16dc6c06eec1fac9731a69048dc605fae32f))
+* report pending ward approvals to herdr ([#17](https://github.com/Jomik/pi-ward/issues/17)) ([2821fb2](https://github.com/Jomik/pi-ward/commit/2821fb2c79c45445e7a97056bd7ae13b6fd39a19))
+
+
+### Bug Fixes
+
+* expand home-relative paths before policy checks ([#18](https://github.com/Jomik/pi-ward/issues/18)) ([2d71f7f](https://github.com/Jomik/pi-ward/commit/2d71f7fd900438f3065003da2181ab8a31a7cfb9))
+* **security:** filter denied-file contents from grep tool output ([f17e157](https://github.com/Jomik/pi-ward/commit/f17e157a379bb10235143620c34047ec8db35c23))
+
 ## [0.2.0](https://github.com/Jomik/pi-ward/compare/v0.1.0...v0.2.0) (2026-06-01)
 
 
