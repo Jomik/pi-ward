@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
-import { extractAccess } from "../src/index.js";
+import { describe, expect, it, vi } from "vitest";
+import { GrantStore } from "../src/grants.js";
+import { extractAccess, promptAccess } from "../src/index.js";
 
 const projectRoot = "/project";
 
@@ -121,5 +122,64 @@ describe("extractAccess", () => {
   it("returns null for unknown custom tools", () => {
     const result = extractAccess(makeEvent("my_custom_tool", { foo: "bar" }), projectRoot);
     expect(result).toBeNull();
+  });
+});
+
+describe("promptAccess herdr reporting", () => {
+  const path = "/outside/file.txt";
+
+  it("reports blocked across both approval prompts", async () => {
+    const trace: string[] = [];
+    const events = {
+      emit: vi.fn((channel: string, data: unknown) => {
+        trace.push(`${channel}:${String((data as { active: boolean }).active)}`);
+      }),
+    };
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string) => {
+          trace.push(`select:${message}`);
+          return message.startsWith("Access") ? "Approve" : "Once";
+        }),
+      },
+    };
+
+    await promptAccess(events, ctx, "read", "read", path, path, new GrantStore());
+
+    expect(trace).toEqual([
+      "herdr:blocked:true",
+      `select:Access outside project root:\n\n  read ${path}`,
+      "select:Approve scope:",
+      "herdr:blocked:false",
+    ]);
+    expect(events.emit).toHaveBeenNthCalledWith(1, "herdr:blocked", {
+      active: true,
+      label: `Ward approval: read ${path}`,
+    });
+    expect(events.emit).toHaveBeenNthCalledWith(2, "herdr:blocked", { active: false });
+  });
+
+  it("clears blocked state when the approval UI throws", async () => {
+    const events = { emit: vi.fn() };
+    const ctx = {
+      hasUI: true,
+      ui: { select: vi.fn().mockRejectedValue(new Error("UI crashed")) },
+    };
+
+    await expect(promptAccess(events, ctx, "write", "write", path, path, new GrantStore())).rejects.toThrow(
+      "UI crashed",
+    );
+
+    expect(events.emit).toHaveBeenLastCalledWith("herdr:blocked", { active: false });
+  });
+
+  it("does not report blocked without UI", async () => {
+    const events = { emit: vi.fn() };
+    const ctx = { hasUI: false, ui: { select: vi.fn() } };
+
+    await promptAccess(events, ctx, "read", "read", path, path, new GrantStore());
+
+    expect(events.emit).not.toHaveBeenCalled();
   });
 });

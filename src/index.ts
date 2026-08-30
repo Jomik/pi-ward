@@ -53,7 +53,8 @@ export function extractAccess(
   return null;
 }
 
-async function promptAccess(
+export async function promptAccess(
+  events: { emit(channel: string, data: unknown): void },
   ctx: { hasUI: boolean; ui: { select(msg: string, options: string[]): Promise<string | undefined> } },
   toolName: string,
   operation: Operation,
@@ -68,31 +69,36 @@ async function promptAccess(
     };
   }
 
-  const action = await ctx.ui.select(`Access outside project root:\n\n  ${operation} ${inputPath}`, [
-    "Deny",
-    "Approve",
-  ]);
+  events.emit("herdr:blocked", { active: true, label: `Ward approval: ${operation} ${inputPath}` });
+  try {
+    const action = await ctx.ui.select(`Access outside project root:\n\n  ${operation} ${inputPath}`, [
+      "Deny",
+      "Approve",
+    ]);
 
-  if (!action) {
-    return { block: true, reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: dismissed` };
-  }
+    if (!action) {
+      return { block: true, reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: dismissed` };
+    }
 
-  if (action !== "Approve") {
-    const scope = await ctx.ui.select("Deny scope:", ["Once", "For session"]);
+    if (action !== "Approve") {
+      const scope = await ctx.ui.select("Deny scope:", ["Once", "For session"]);
+      if (scope === "For session") {
+        const dir = await isDirectory(resolvedPath);
+        grants.addDeny(resolvedPath, "read", dir);
+      }
+      return { block: true, reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user` };
+    }
+
+    const scope = await ctx.ui.select("Approve scope:", ["Once", "For session"]);
     if (scope === "For session") {
       const dir = await isDirectory(resolvedPath);
-      grants.addDeny(resolvedPath, "read", dir);
+      grants.addAllow(resolvedPath, operation, dir);
     }
-    return { block: true, reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user` };
-  }
 
-  const scope = await ctx.ui.select("Approve scope:", ["Once", "For session"]);
-  if (scope === "For session") {
-    const dir = await isDirectory(resolvedPath);
-    grants.addAllow(resolvedPath, operation, dir);
+    return undefined;
+  } finally {
+    events.emit("herdr:blocked", { active: false });
   }
-
-  return undefined;
 }
 
 const factory: ExtensionFactory = async (pi) => {
@@ -199,7 +205,15 @@ const factory: ExtensionFactory = async (pi) => {
         if (result.allowed) continue;
         if (!result.grantable) return { block: true, reason: result.reason };
 
-        const blocked = await promptAccess(ctx, event.toolName, operation, inputPath, result.resolvedPath, grants);
+        const blocked = await promptAccess(
+          pi.events,
+          ctx,
+          event.toolName,
+          operation,
+          inputPath,
+          result.resolvedPath,
+          grants,
+        );
         if (blocked) return blocked;
       }
 
