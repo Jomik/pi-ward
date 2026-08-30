@@ -1,11 +1,24 @@
 import { lstat, realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface ResolveResult {
   /** Resolved absolute real path. Only meaningful when denied is not set. */
   path: string;
   /** If set, the path should be denied with this reason (before rule evaluation). */
   denied?: string;
+}
+
+/**
+ * Expand bare '~', leading '~/' (all platforms), and leading '~\\' (Windows only)
+ * to the given home directory, using path.join semantics.
+ * '~user' forms are left unchanged, matching pi's normalizePath semantics.
+ */
+function expandTilde(inputPath: string, homeDir: string): string {
+  if (inputPath === "~") return homeDir;
+  if (inputPath.startsWith("~/")) return join(homeDir, inputPath.slice(2));
+  if (process.platform === "win32" && inputPath.startsWith("~\\")) return join(homeDir, inputPath.slice(2));
+  return inputPath;
 }
 
 /**
@@ -82,6 +95,8 @@ async function resolveNewFile(normalized: string): Promise<ResolveResult> {
 /**
  * Resolve an input path to its real absolute path.
  *
+ * - Expands bare '~' and leading '~/' to the home directory before resolution.
+ *   '~user' forms are left unchanged (not expanded), matching pi's normalizePath semantics.
  * - Normalizes the path (resolves relative to projectRoot if not absolute).
  * - Resolves symlinks via fs.realpath.
  * - If the target doesn't exist (ENOENT):
@@ -91,9 +106,13 @@ async function resolveNewFile(normalized: string): Promise<ResolveResult> {
  *     - Parent resolves → returns parent + basename.
  *     - Parent fails → denied.
  * - Any other error → denied (fail-closed).
+ *
+ * @param homeDir - Override the home directory used for tilde expansion.
+ *                  Defaults to os.homedir(). Accepts an override for deterministic tests.
  */
-export async function resolvePath(inputPath: string, projectRoot: string): Promise<ResolveResult> {
-  const normalized = isAbsolute(inputPath) ? resolve(inputPath) : resolve(projectRoot, inputPath);
+export async function resolvePath(inputPath: string, projectRoot: string, homeDir?: string): Promise<ResolveResult> {
+  const expanded = expandTilde(inputPath, homeDir ?? homedir());
+  const normalized = isAbsolute(expanded) ? resolve(expanded) : resolve(projectRoot, expanded);
 
   try {
     const real = await realpath(normalized);

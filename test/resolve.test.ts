@@ -2,6 +2,7 @@ import { chmod, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { guard } from "../src/guard.js";
 import { resolvePath, resolveRealPath } from "../src/resolve.js";
 
 let tempDir: string;
@@ -237,5 +238,54 @@ describe("resolveRealPath", () => {
     const result = await resolveRealPath(join(linkDir, "non-existent.txt"));
     // Should resolve through the symlink
     expect(result).toBe(resolve(realDir, "non-existent.txt"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tilde expansion
+// ---------------------------------------------------------------------------
+
+describe("tilde expansion", () => {
+  let fakeHome: string;
+
+  beforeEach(async () => {
+    fakeHome = join(tempDir, "home");
+    await mkdir(fakeHome);
+  });
+
+  // --- Regression: minimal failing test (shows bypass before fix) ---
+
+  it("guard baseline-deny regression: '~/' path is denied outside project root", async () => {
+    // Before fix: resolvePath('~/sensitive', projectRoot) → projectRoot + '/~/sensitive'
+    // That is UNDER projectRoot → baseline-allow → security bypass.
+    // After fix: expands to homedir()/sensitive → outside projectRoot → baseline-deny.
+    const result = await guard("read", ["~/sensitive"], "read", [], projectRoot);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toMatch(/outside project root/i);
+    }
+  });
+
+  // --- Focused expansion tests (use homeDir parameter for determinism) ---
+
+  it("expands bare '~' to homeDir", async () => {
+    const result = await resolvePath("~", projectRoot, fakeHome);
+    expect(result.denied).toBeUndefined();
+    expect(result.path).toBe(fakeHome);
+  });
+
+  it("expands '~/.ssh' to homeDir/.ssh (non-existent child, resolves via ancestor)", async () => {
+    // fakeHome exists, .ssh does not — walks up to fakeHome then re-appends .ssh
+    const result = await resolvePath("~/.ssh", projectRoot, fakeHome);
+    expect(result.denied).toBeUndefined();
+    expect(result.path).toBe(join(fakeHome, ".ssh"));
+  });
+
+  it("leaves '~user' unchanged — treated as project-relative path", async () => {
+    // '~user' is not a tilde expansion — must not be confused with ~/ or ~
+    const result = await resolvePath("~user", projectRoot, fakeHome);
+    expect(result.denied).toBeUndefined();
+    // Resolves as projectRoot/~user (relative, not home-relative)
+    expect(result.path).toBe(join(projectRoot, "~user"));
   });
 });
