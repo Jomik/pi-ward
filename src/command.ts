@@ -24,13 +24,6 @@ export interface WardCommandDeps {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Expand a leading `~/` (or bare `~`) using the resolved home directory. */
-function expandHome(inputPath: string, homeDir: string): string {
-  if (inputPath === "~") return homeDir;
-  if (inputPath.startsWith("~/")) return homeDir + inputPath.slice(1);
-  return inputPath;
-}
-
 /** Reformat an absolute path back to `~/…` form for display. */
 function displayPath(absolutePath: string, homeDir: string): string {
   if (absolutePath === homeDir) return "~";
@@ -72,8 +65,7 @@ async function handleAllow(rest: string, deps: WardCommandDeps, ctx: CommandCont
 
   // Detect trailing slash BEFORE path resolution strips it.
   const trailingSlash = rawPath.endsWith("/");
-  const expanded = expandHome(rawPath, deps.homeDir);
-  const resolved = await resolvePath(expanded, deps.projectRoot);
+  const resolved = await resolvePath(rawPath, deps.projectRoot, deps.homeDir);
 
   if (resolved.denied) {
     ctx.ui.notify(`Cannot resolve path: ${resolved.denied}`, "warning");
@@ -116,8 +108,7 @@ async function handleDeny(rest: string, deps: WardCommandDeps, ctx: CommandConte
   }
 
   const trailingSlash = rawPath.endsWith("/");
-  const expanded = expandHome(rawPath, deps.homeDir);
-  const resolved = await resolvePath(expanded, deps.projectRoot);
+  const resolved = await resolvePath(rawPath, deps.projectRoot, deps.homeDir);
 
   if (resolved.denied) {
     ctx.ui.notify(`Cannot resolve path: ${resolved.denied}`, "warning");
@@ -201,8 +192,7 @@ async function handleRevoke(rest: string, deps: WardCommandDeps, ctx: CommandCon
     return;
   }
 
-  const expanded = expandHome(rawPath, deps.homeDir);
-  const resolved = await resolvePath(expanded, deps.projectRoot);
+  const resolved = await resolvePath(rawPath, deps.projectRoot, deps.homeDir);
 
   if (resolved.denied) {
     ctx.ui.notify(`Cannot resolve path: ${resolved.denied}`, "warning");
@@ -234,8 +224,7 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
     return;
   }
 
-  const expanded = expandHome(rawPath, deps.homeDir);
-  const resolved = await resolvePath(expanded, deps.projectRoot);
+  const resolved = await resolvePath(rawPath, deps.projectRoot, deps.homeDir);
 
   if (resolved.denied) {
     ctx.ui.notify(`Cannot resolve path: ${resolved.denied}`, "warning");
