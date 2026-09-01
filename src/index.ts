@@ -149,11 +149,12 @@ export async function handleToolCall(
     latestPrompt: string | undefined;
     /**
      * Call-scoped recursive read context, keyed by `event.toolCallId`. When a
-     * grep read targets a prompt-approved directory, its canonical root is
-     * recorded here so the matching `tool_result` filter pass can permit
-     * descendant files. Callers must remove the entry once that call's
-     * filtering is done (see index.ts factory) — it must never leak into
-     * `GrantStore` or authorize other calls.
+     * grep read targets a prompt-approved path — directory or single file —
+     * its canonical resolved path is recorded here so the matching
+     * `tool_result` filter pass can permit it (descendants too, for a
+     * directory; a regular file has none). Callers must remove the entry once
+     * that call's filtering is done (see index.ts factory) — it must never
+     * leak into `GrantStore` or authorize other calls.
      */
     callContexts?: Map<string, string>;
   },
@@ -174,7 +175,7 @@ export async function handleToolCall(
       if (operation === "read" && deps.latestPrompt !== undefined) {
         const promptApproval = await checkPromptApproval(deps.latestPrompt, inputPath, deps.projectRoot, deps.homeDir);
         if (promptApproval.approved) {
-          if (event.toolName === "grep" && promptApproval.isDirectory && deps.callContexts !== undefined) {
+          if (event.toolName === "grep" && deps.callContexts !== undefined) {
             deps.callContexts.set(event.toolCallId, result.resolvedPath);
           }
           continue;

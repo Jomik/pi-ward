@@ -480,9 +480,10 @@ describe("handleToolCall", () => {
     expect(callContexts.size).toBe(0);
   });
 
-  it("does not record context for an approved grep file target (not a directory)", async () => {
+  it("records the approved file's canonical path keyed by toolCallId for a grep file target", async () => {
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "data");
+    const resolvedFile = await realpath(file);
     const grants = new GrantStore();
     const ctx = { hasUI: false, ui: { select: vi.fn() } };
     const callContexts = new Map<string, string>();
@@ -496,7 +497,7 @@ describe("handleToolCall", () => {
       callContexts,
     });
 
-    expect(callContexts.size).toBe(0);
+    expect(callContexts.get("call-3")).toBe(resolvedFile);
   });
 
   it("uses the correct call ID for each of two concurrent grep calls", async () => {
@@ -529,6 +530,72 @@ describe("handleToolCall", () => {
 
     expect(callContexts.get("call-a")).toBe(resolvedA);
     expect(callContexts.get("call-b")).toBe(resolvedB);
+  });
+});
+
+describe("handleToolCall + handleGrepResult (end-to-end)", () => {
+  let tempDir: string;
+  let testProjectRoot: string;
+  let outsideDir: string;
+  const events = { emit: vi.fn() };
+
+  beforeEach(async () => {
+    const base = join(tmpdir(), `pi-ward-e2e-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(join(base, "project"), { recursive: true });
+    await mkdir(join(base, "outside"), { recursive: true });
+    tempDir = await realpath(base);
+    testProjectRoot = join(tempDir, "project");
+    outsideDir = join(tempDir, "outside");
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("keeps a prompt-approved external file's grep output visible and cleans up the call context", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello world");
+    const resolvedFile = await realpath(file);
+    const grants = new GrantStore();
+    const ctx = { hasUI: false, ui: { select: vi.fn() } };
+    const callContexts = new Map<string, string>();
+
+    const callEvent: ToolCallEvent = {
+      type: "tool_call",
+      toolCallId: "call-e2e",
+      toolName: "grep",
+      input: { pattern: "hello", path: file },
+    } as ToolCallEvent;
+
+    const callResult = await handleToolCall(callEvent, ctx, events, {
+      rules: [],
+      projectRoot: testProjectRoot,
+      homeDir: tempDir,
+      grants,
+      latestPrompt: `look in @${file}`,
+      callContexts,
+    });
+
+    expect(callResult).toBeUndefined();
+    expect(callContexts.get("call-e2e")).toBe(resolvedFile);
+
+    const resultEvent = {
+      type: "tool_result",
+      toolCallId: "call-e2e",
+      toolName: "grep",
+      input: { pattern: "hello", path: file },
+      content: [{ type: "text", text: "notes.txt:1: hello world" }],
+    } as unknown as ToolResultEvent;
+
+    const grepResult = await handleGrepResult(resultEvent, {
+      rules: [],
+      projectRoot: testProjectRoot,
+      grants,
+      callContexts,
+    });
+
+    expect(grepResult).toBeUndefined();
+    expect(callContexts.has("call-e2e")).toBe(false);
   });
 });
 
