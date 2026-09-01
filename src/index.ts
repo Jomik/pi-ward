@@ -9,7 +9,8 @@ import { isDirectory } from "./fs-utils.js";
 import { GrantStore } from "./grants.js";
 import { filterGrepOutput } from "./grep-filter.js";
 import { checkPath } from "./guard.js";
-import type { Operation } from "./rules.js";
+import { checkPromptApproval } from "./prompt-approval.js";
+import type { Operation, ParsedRule } from "./rules.js";
 import { createDeleteTool } from "./tools/delete.js";
 import { createMoveTool } from "./tools/move.js";
 
@@ -51,6 +52,34 @@ export function extractAccess(
     return { operation: "write", paths: [event.input.source, event.input.destination] };
   }
   return null;
+}
+
+/** Genuine (non-extension-originated) input sources that qualify as prompt approval context. */
+const GENUINE_INPUT_SOURCES = new Set(["interactive", "rpc"]);
+
+/**
+ * Tracks the latest genuine prompt text across `input` events, for use by
+ * `tool_call` handling. "extension"-originated input (e.g. via sendUserMessage)
+ * must never become an approval source and must not replace the latest
+ * genuine prompt.
+ */
+export interface PromptTracker {
+  recordInput(event: { source: string; text: string }): void;
+  getLatest(): string | undefined;
+}
+
+export function createPromptTracker(): PromptTracker {
+  let latest: string | undefined;
+  return {
+    recordInput(event) {
+      if (GENUINE_INPUT_SOURCES.has(event.source)) {
+        latest = event.text;
+      }
+    },
+    getLatest() {
+      return latest;
+    },
+  };
 }
 
 export async function promptAccess(
@@ -101,11 +130,73 @@ export async function promptAccess(
   }
 }
 
+/**
+ * Handle a `tool_call` event: run the existing `checkPath` guard for each
+ * target path, and — only for an otherwise-grantable `read` denial — check
+ * whether the latest genuine prompt approves the target before prompting
+ * the user. An approval here allows silently: it is never added to the
+ * `GrantStore`.
+ */
+export async function handleToolCall(
+  event: ToolCallEvent,
+  ctx: { hasUI: boolean; ui: { select(msg: string, options: string[]): Promise<string | undefined> } },
+  events: { emit(channel: string, data: unknown): void },
+  deps: {
+    rules: ParsedRule[];
+    projectRoot: string;
+    homeDir: string;
+    grants: GrantStore;
+    latestPrompt: string | undefined;
+  },
+): Promise<{ block?: boolean; reason?: string } | undefined> {
+  try {
+    const dispatch = extractAccess(event, deps.projectRoot);
+    if (dispatch === null) {
+      return undefined;
+    }
+
+    const { operation, paths } = dispatch;
+
+    for (const inputPath of paths) {
+      const result = await checkPath(event.toolName, inputPath, operation, deps.rules, deps.projectRoot, deps.grants);
+      if (result.allowed) continue;
+      if (!result.grantable) return { block: true, reason: result.reason };
+
+      if (operation === "read" && deps.latestPrompt !== undefined) {
+        // Kept as a distinct result object (not collapsed to a boolean) so a
+        // later change can use `isDirectory` to scope descendant/output filtering.
+        const promptApproval = await checkPromptApproval(deps.latestPrompt, inputPath, deps.projectRoot, deps.homeDir);
+        if (promptApproval.approved) continue;
+      }
+
+      const blocked = await promptAccess(
+        events,
+        ctx,
+        event.toolName,
+        operation,
+        inputPath,
+        result.resolvedPath,
+        deps.grants,
+      );
+      if (blocked) return blocked;
+    }
+
+    return undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      block: true,
+      reason: `[pi-ward] Internal error — access denied (fail-closed): ${message}`,
+    };
+  }
+}
+
 const factory: ExtensionFactory = async (pi) => {
   const projectRoot = await realpath(process.cwd());
   const homeDir = await realpath(homedir());
   const { rules } = await loadConfig(projectRoot, homeDir);
   const grants = new GrantStore();
+  const promptTracker = createPromptTracker();
 
   pi.registerTool(createDeleteTool(projectRoot));
   pi.registerTool(createMoveTool(projectRoot));
@@ -143,6 +234,11 @@ const factory: ExtensionFactory = async (pi) => {
     handler: async (args, ctx) => {
       await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants });
     },
+  });
+
+  pi.on("input", async (event, _ctx) => {
+    promptTracker.recordInput(event);
+    return undefined;
   });
 
   pi.on("tool_result", async (event, _ctx) => {
@@ -191,41 +287,15 @@ const factory: ExtensionFactory = async (pi) => {
     }
   });
 
-  pi.on("tool_call", async (event, ctx) => {
-    try {
-      const dispatch = extractAccess(event, projectRoot);
-      if (dispatch === null) {
-        return undefined;
-      }
-
-      const { operation, paths } = dispatch;
-
-      for (const inputPath of paths) {
-        const result = await checkPath(event.toolName, inputPath, operation, rules, projectRoot, grants);
-        if (result.allowed) continue;
-        if (!result.grantable) return { block: true, reason: result.reason };
-
-        const blocked = await promptAccess(
-          pi.events,
-          ctx,
-          event.toolName,
-          operation,
-          inputPath,
-          result.resolvedPath,
-          grants,
-        );
-        if (blocked) return blocked;
-      }
-
-      return undefined;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        block: true,
-        reason: `[pi-ward] Internal error — access denied (fail-closed): ${message}`,
-      };
-    }
-  });
+  pi.on("tool_call", async (event, ctx) =>
+    handleToolCall(event, ctx, pi.events, {
+      rules,
+      projectRoot,
+      homeDir,
+      grants,
+      latestPrompt: promptTracker.getLatest(),
+    }),
+  );
 };
 
 export default factory;
