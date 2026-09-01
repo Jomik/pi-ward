@@ -32,7 +32,7 @@ pi-ward intercepts file operations (`read`, `write`, `edit`) before they execute
 - Read/write within project root: allowed
 - Any access outside project root: denied
 
-When a path outside the project root is accessed and no explicit deny rule matches, ward prompts for approval (if a UI is available). You can approve or deny, scoped to a single attempt or the entire session. See [DESIGN.md](./DESIGN.md) for details.
+When a path outside the project root is accessed and no explicit deny rule matches, ward prompts for approval (if a UI is available). You can approve or deny, scoped to a single attempt or the entire session. Alternatively, a read of an otherwise-grantable external path may be silently approved for the current turn when the user's latest own message references the exact path — existing files may be referenced bare or with `@`, while directories require `@` since directory tools may recurse. This approval is read-only, non-persistent, works without a UI, and never overrides explicit deny rules. See [DESIGN.md](./DESIGN.md#prompt-derived-approval-implicit-turn-scoped-grants) for the exact grammar.
 
 ## Config
 
