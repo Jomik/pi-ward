@@ -1,7 +1,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import type { ExtensionFactory, ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionFactory, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { wardCommandHandler } from "./command.js";
 import { loadConfig } from "./config.js";
@@ -147,6 +147,15 @@ export async function handleToolCall(
     homeDir: string;
     grants: GrantStore;
     latestPrompt: string | undefined;
+    /**
+     * Call-scoped recursive read context, keyed by `event.toolCallId`. When a
+     * grep read targets a prompt-approved directory, its canonical root is
+     * recorded here so the matching `tool_result` filter pass can permit
+     * descendant files. Callers must remove the entry once that call's
+     * filtering is done (see index.ts factory) — it must never leak into
+     * `GrantStore` or authorize other calls.
+     */
+    callContexts?: Map<string, string>;
   },
 ): Promise<{ block?: boolean; reason?: string } | undefined> {
   try {
@@ -163,10 +172,13 @@ export async function handleToolCall(
       if (!result.grantable) return { block: true, reason: result.reason };
 
       if (operation === "read" && deps.latestPrompt !== undefined) {
-        // Kept as a distinct result object (not collapsed to a boolean) so a
-        // later change can use `isDirectory` to scope descendant/output filtering.
         const promptApproval = await checkPromptApproval(deps.latestPrompt, inputPath, deps.projectRoot, deps.homeDir);
-        if (promptApproval.approved) continue;
+        if (promptApproval.approved) {
+          if (event.toolName === "grep" && promptApproval.isDirectory && deps.callContexts !== undefined) {
+            deps.callContexts.set(event.toolCallId, result.resolvedPath);
+          }
+          continue;
+        }
       }
 
       const blocked = await promptAccess(
@@ -191,12 +203,86 @@ export async function handleToolCall(
   }
 }
 
+/**
+ * Handle a `tool_result` event for the `grep` tool: filter output through
+ * `filterGrepOutput`, using the call-scoped approved root (if any) recorded
+ * by `handleToolCall` for this `event.toolCallId`. The context entry is
+ * always removed in a `finally` block after filtering completes (success or
+ * error) — it is call-scoped only and must never leak to sibling/later calls
+ * or into `GrantStore`.
+ */
+export async function handleGrepResult(
+  event: ToolResultEvent,
+  deps: {
+    rules: ParsedRule[];
+    projectRoot: string;
+    grants: GrantStore;
+    callContexts: Map<string, string>;
+  },
+): Promise<{ content: ToolResultEvent["content"] } | undefined> {
+  if (event.toolName !== "grep") return undefined;
+
+  const approvedRoot = deps.callContexts.get(event.toolCallId);
+
+  try {
+    const inputPath = (event.input.path as string | undefined) ?? ".";
+    const resolvedInput = resolve(deps.projectRoot, inputPath);
+
+    // Determine searchRoot: grep emits paths relative to its search target.
+    // When the target is a file, grep emits basename only, so searchRoot must
+    // be the file's parent directory. Fall back to treating path as a directory
+    // if stat fails (degrades to fail-closed dropping, not leaking).
+    // Note: divergence from resolveToCwd normalization (Unicode spaces, @-prefix)
+    // is acceptable — unresolvable paths are dropped, not leaked.
+    let searchRoot: string;
+    try {
+      const s = await stat(resolvedInput);
+      searchRoot = s.isDirectory() ? resolvedInput : dirname(resolvedInput);
+    } catch {
+      searchRoot = resolvedInput;
+    }
+
+    let anyChanged = false;
+    const newParts: typeof event.content = [];
+
+    for (const part of event.content) {
+      if (part.type !== "text") {
+        newParts.push(part);
+        continue;
+      }
+
+      const result = await filterGrepOutput(
+        part.text,
+        searchRoot,
+        deps.rules,
+        deps.projectRoot,
+        deps.grants,
+        approvedRoot,
+      );
+
+      if (result.changed) anyChanged = true;
+      newParts.push({ type: "text", text: result.text });
+    }
+
+    if (!anyChanged) return undefined;
+
+    return { content: newParts };
+  } catch (_err) {
+    return {
+      content: [{ type: "text", text: "[pi-ward] grep output suppressed (filter error)" }],
+    };
+  } finally {
+    deps.callContexts.delete(event.toolCallId);
+  }
+}
+
 const factory: ExtensionFactory = async (pi) => {
   const projectRoot = await realpath(process.cwd());
   const homeDir = await realpath(homedir());
   const { rules } = await loadConfig(projectRoot, homeDir);
   const grants = new GrantStore();
   const promptTracker = createPromptTracker();
+  const callContexts = new Map<string, string>();
 
   pi.registerTool(createDeleteTool(projectRoot));
   pi.registerTool(createMoveTool(projectRoot));
@@ -241,51 +327,7 @@ const factory: ExtensionFactory = async (pi) => {
     return undefined;
   });
 
-  pi.on("tool_result", async (event, _ctx) => {
-    if (event.toolName !== "grep") return undefined;
-
-    try {
-      const inputPath = (event.input.path as string | undefined) ?? ".";
-      const resolvedInput = resolve(projectRoot, inputPath);
-
-      // Determine searchRoot: grep emits paths relative to its search target.
-      // When the target is a file, grep emits basename only, so searchRoot must
-      // be the file's parent directory. Fall back to treating path as a directory
-      // if stat fails (degrades to fail-closed dropping, not leaking).
-      // Note: divergence from resolveToCwd normalization (Unicode spaces, @-prefix)
-      // is acceptable — unresolvable paths are dropped, not leaked.
-      let searchRoot: string;
-      try {
-        const s = await stat(resolvedInput);
-        searchRoot = s.isDirectory() ? resolvedInput : dirname(resolvedInput);
-      } catch {
-        searchRoot = resolvedInput;
-      }
-
-      let anyChanged = false;
-      const newParts: typeof event.content = [];
-
-      for (const part of event.content) {
-        if (part.type !== "text") {
-          newParts.push(part);
-          continue;
-        }
-
-        const result = await filterGrepOutput(part.text, searchRoot, rules, projectRoot, grants);
-
-        if (result.changed) anyChanged = true;
-        newParts.push({ type: "text", text: result.text });
-      }
-
-      if (!anyChanged) return undefined;
-
-      return { content: newParts };
-    } catch (_err) {
-      return {
-        content: [{ type: "text", text: "[pi-ward] grep output suppressed (filter error)" }],
-      };
-    }
-  });
+  pi.on("tool_result", async (event, _ctx) => handleGrepResult(event, { rules, projectRoot, grants, callContexts }));
 
   pi.on("tool_call", async (event, ctx) =>
     handleToolCall(event, ctx, pi.events, {
@@ -294,6 +336,7 @@ const factory: ExtensionFactory = async (pi) => {
       homeDir,
       grants,
       latestPrompt: promptTracker.getLatest(),
+      callContexts,
     }),
   );
 };

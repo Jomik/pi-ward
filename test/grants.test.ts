@@ -249,6 +249,87 @@ describe("checkPath with grants", () => {
 });
 
 // ---------------------------------------------------------------------------
+// checkPath with call-scoped recursive root
+// ---------------------------------------------------------------------------
+
+describe("checkPath with callScopedRoot", () => {
+  it("allows a descendant of the approved root that would otherwise be a baseline deny", async () => {
+    const subDir = join(outsideDir, "sub");
+    await mkdir(subDir, { recursive: true });
+    const file = join(subDir, "deep.txt");
+    await writeFile(file, "deep");
+
+    const resolvedRoot = await realpath(outsideDir);
+    const result = await checkPath("grep", file, "read", [], projectRoot, undefined, resolvedRoot);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows the approved root path itself", async () => {
+    const resolvedRoot = await realpath(outsideDir);
+    const result = await checkPath("grep", outsideDir, "read", [], projectRoot, undefined, resolvedRoot);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("explicit deny rule still wins over an approved call-scoped root", async () => {
+    const file = join(outsideDir, "secret.env");
+    await writeFile(file, "SECRET=1");
+
+    const resolvedRoot = await realpath(outsideDir);
+    const rules: ParsedRule[] = [makeRule("*.env", "deny", projectRoot)];
+    const result = await checkPath("grep", file, "read", rules, projectRoot, undefined, resolvedRoot);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(false);
+      expect(result.reason).toMatch(/denied by policy/);
+    }
+  });
+
+  it("session deny still wins over an approved call-scoped root", async () => {
+    const file = join(outsideDir, "denied.txt");
+    await writeFile(file, "secret");
+
+    const resolvedFile = await realpath(file);
+    const resolvedRoot = await realpath(outsideDir);
+    const store = new GrantStore();
+    store.addDeny(resolvedFile, "read", false);
+
+    const result = await checkPath("grep", file, "read", [], projectRoot, store, resolvedRoot);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(false);
+      expect(result.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
+  it("paths outside the approved root remain baseline-denied", async () => {
+    const approvedDir = join(outsideDir, "approved");
+    const otherDir = join(outsideDir, "other");
+    await mkdir(approvedDir, { recursive: true });
+    await mkdir(otherDir, { recursive: true });
+    const file = join(otherDir, "file.txt");
+    await writeFile(file, "data");
+
+    const resolvedRoot = await realpath(approvedDir);
+    const result = await checkPath("grep", file, "read", [], projectRoot, undefined, resolvedRoot);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(true);
+    }
+  });
+
+  it("behaves unchanged without a call-scoped root (baseline deny remains grantable)", async () => {
+    const file = join(outsideDir, "file.txt");
+    await writeFile(file, "data");
+
+    const result = await checkPath("grep", file, "read", [], projectRoot);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // guard (non-interactive) with grants
 // ---------------------------------------------------------------------------
 

@@ -394,3 +394,63 @@ describe("grep filter — adversarial hardening", () => {
     expect(result.files).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// approvedRoot (call-scoped recursive prompt approval)
+// ---------------------------------------------------------------------------
+
+describe("filterGrepOutput — approvedRoot", () => {
+  it("keeps a descendant file under the approved root that would otherwise be baseline-denied", async () => {
+    const outsideDir = join(tempDir, "outside");
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(join(outsideDir, "data.txt"), "hello");
+
+    const text = matchLine("data.txt", 1, "hello");
+    const result = await filterGrepOutput(text, outsideDir, [], projectRoot, undefined, outsideDir);
+
+    expect(result.dropped).toBe(0);
+    expect(result.text).toBe(text);
+    expect(result.changed).toBe(false);
+  });
+
+  it("still hides an explicitly denied file within the approved root", async () => {
+    const outsideDir = join(tempDir, "outside");
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(join(outsideDir, ".env"), "SECRET=1");
+    await writeFile(join(outsideDir, "ok.txt"), "fine");
+
+    const rules: ParsedRule[] = [denyRule(".env", projectRoot)];
+    const text = [matchLine(".env", 1, "SECRET=1"), matchLine("ok.txt", 1, "fine")].join("\n");
+    const result = await filterGrepOutput(text, outsideDir, rules, projectRoot, undefined, outsideDir);
+
+    expect(result.text).not.toContain("SECRET=1");
+    expect(result.text).toContain("fine");
+    expect(result.dropped).toBe(1);
+  });
+
+  it("leaves a file outside the approved root baseline-denied", async () => {
+    const approvedDir = join(tempDir, "approved");
+    const otherDir = join(tempDir, "other");
+    await mkdir(approvedDir, { recursive: true });
+    await mkdir(otherDir, { recursive: true });
+    await writeFile(join(otherDir, "file.txt"), "secret");
+
+    const text = matchLine("file.txt", 1, "secret");
+    const result = await filterGrepOutput(text, otherDir, [], projectRoot, undefined, approvedDir);
+
+    expect(result.text).not.toContain("secret");
+    expect(result.dropped).toBe(1);
+  });
+
+  it("without an approvedRoot, behavior is unchanged (baseline deny applies)", async () => {
+    const outsideDir = join(tempDir, "outside");
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(join(outsideDir, "data.txt"), "hello");
+
+    const text = matchLine("data.txt", 1, "hello");
+    const result = await filterGrepOutput(text, outsideDir, [], projectRoot);
+
+    expect(result.dropped).toBe(1);
+    expect(result.text).not.toContain("hello");
+  });
+});

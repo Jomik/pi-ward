@@ -1,8 +1,16 @@
+import { sep } from "node:path";
 import { evaluate } from "./evaluator.js";
 import type { GrantStore } from "./grants.js";
 import { resolvePath } from "./resolve.js";
 import type { Operation, ParsedRule } from "./rules.js";
 import { isSelfProtected } from "./self-protect.js";
+
+/** True if `path` is `root` itself or a descendant of `root`. */
+function isWithinRoot(path: string, root: string): boolean {
+  if (path === root) return true;
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  return path.startsWith(prefix);
+}
 
 export type GuardResult =
   | { allowed: true }
@@ -24,6 +32,7 @@ export async function checkPath(
   rules: ParsedRule[],
   projectRoot: string,
   grants?: GrantStore,
+  callScopedRoot?: string,
 ): Promise<GuardResult> {
   const resolved = await resolvePath(inputPath, projectRoot);
 
@@ -69,6 +78,13 @@ export async function checkPath(
       reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user (session)`,
       grantable: false,
     };
+  }
+
+  // Call-scoped recursive approval (e.g. a grep run against a prompt-approved
+  // directory): permits descendants of that root for this call only, after
+  // explicit rules and session grants/denies have already had the chance to win.
+  if (callScopedRoot !== undefined && isWithinRoot(resolved.path, callScopedRoot)) {
+    return { allowed: true };
   }
 
   return {

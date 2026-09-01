@@ -57,6 +57,12 @@ export interface FilterGrepOutputResult {
  * @param rules       Parsed access rules.
  * @param projectRoot Absolute project root path.
  * @param grants      Optional session grant store.
+ * @param approvedRoot Optional call-scoped root approved for this grep call
+ *                     (e.g. a prompt-approved directory). Descendant regular
+ *                     files under this root pass the baseline outside-project
+ *                     deny, but explicit rule denies and session denies still
+ *                     win. Scope is limited to this single filtering pass —
+ *                     callers must not persist it across calls.
  *
  *
  * **TOCTOU limitation:** this filter stat-verifies candidate paths *after* grep
@@ -73,6 +79,7 @@ export async function filterGrepOutput(
   rules: ParsedRule[],
   projectRoot: string,
   grants?: GrantStore,
+  approvedRoot?: string,
 ): Promise<FilterGrepOutputResult> {
   const lines = text.split("\n");
 
@@ -108,7 +115,7 @@ export async function filterGrepOutput(
       // biome-ignore lint/style/noNonNullAssertion: cache.has guarantees presence
       return allowCache.get(absPath)!;
     }
-    const result = await checkPath("grep", absPath, "read", rules, projectRoot, grants);
+    const result = await checkPath("grep", absPath, "read", rules, projectRoot, grants, approvedRoot);
     allowCache.set(absPath, result.allowed);
     return result.allowed;
   }
