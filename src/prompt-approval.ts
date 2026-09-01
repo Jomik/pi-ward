@@ -17,8 +17,11 @@ interface Candidate {
 }
 
 // Matches, in priority order at each position: `@"quoted"`, `@bare`, `"quoted"`.
-// Bare unquoted tokens (not matched here) are recovered from the remaining text.
-const REFERENCE_REGEX = /@"([^"]*)"|@(\S+)|"([^"]*)"/g;
+// The `@` forms only match at a reference boundary (start of message, whitespace,
+// or an opening paren) so an `@` embedded inside another token (e.g. `admin@/tmp/dir`)
+// is never treated as a marker. Bare unquoted tokens (not matched here) are recovered
+// from the remaining text.
+const REFERENCE_REGEX = /(?<=^|[\s(])@"([^"]*)"|(?<=^|[\s(])@(\S+)|"([^"]*)"/g;
 
 /** Strip prose punctuation not considered part of an unquoted path candidate. */
 function stripBoundaryPunctuation(token: string): string {
@@ -64,10 +67,12 @@ function extractCandidates(message: string): Candidate[] {
 }
 
 /** Determine what kind of filesystem entry a resolved path is, without throwing. */
-async function targetKind(resolvedPath: string): Promise<"file" | "directory" | "missing"> {
+async function targetKind(resolvedPath: string): Promise<"file" | "directory" | "other" | "missing"> {
   try {
     const s = await stat(resolvedPath);
-    return s.isDirectory() ? "directory" : "file";
+    if (s.isFile()) return "file";
+    if (s.isDirectory()) return "directory";
+    return "other";
   } catch {
     return "missing";
   }
@@ -93,7 +98,7 @@ export async function checkPromptApproval(
   if (target.denied) return { approved: false, isDirectory: false };
 
   const kind = await targetKind(target.path);
-  if (kind === "missing") return { approved: false, isDirectory: false };
+  if (kind === "missing" || kind === "other") return { approved: false, isDirectory: false };
   const isDirectory = kind === "directory";
 
   for (const candidate of extractCandidates(promptText)) {

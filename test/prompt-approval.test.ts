@@ -178,3 +178,49 @@ describe("no reference in prompt", () => {
     expect(result.approved).toBe(false);
   });
 });
+
+describe("embedded @ is not a reference marker", () => {
+  it("does not treat an @ embedded inside another token (email-like) as a marker", async () => {
+    const dir = join(tempDir, "tmp");
+    await mkdir(dir);
+
+    // "admin@<dir>" — @ is preceded by "admin", not a boundary, so <dir> is never @-marked.
+    const result = await checkPromptApproval(`contact admin@${dir} please`, dir, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+});
+
+describe("non-regular filesystem nodes", () => {
+  it.skipIf(process.platform === "win32")("never approves a device node such as /dev/null", async () => {
+    const result = await checkPromptApproval("check @/dev/null please", "/dev/null", projectRoot);
+
+    expect(result.approved).toBe(false);
+    expect(result.isDirectory).toBe(false);
+  });
+});
+
+describe("empty quotes", () => {
+  it("does not approve from an empty quoted candidate", async () => {
+    const file = join(tempDir, "todo.md");
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`check "" and ${file} unquoted`, file, projectRoot);
+
+    // The empty quoted candidate contributes nothing; approval must come from the bare mention.
+    expect(result.approved).toBe(true);
+  });
+});
+
+describe("unmatched quotes fail closed", () => {
+  it("does not approve a directory referenced via an unterminated quote", async () => {
+    const dir = join(tempDir, "notes");
+    await mkdir(dir);
+
+    // No closing quote: the quoted-@ form never matches, and the leftover token
+    // retains the leading quote character, so it cannot resolve to the directory.
+    const result = await checkPromptApproval(`check @"${dir} please`, dir, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+});
