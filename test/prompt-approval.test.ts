@@ -1,0 +1,180 @@
+import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { checkPromptApproval } from "../src/prompt-approval.js";
+
+let tempDir: string;
+let projectRoot: string;
+
+beforeEach(async () => {
+  const base = join(tmpdir(), `pi-ward-prompt-approval-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  await mkdir(join(base, "project"), { recursive: true });
+  tempDir = await realpath(base);
+  projectRoot = join(tempDir, "project");
+});
+
+afterEach(async () => {
+  await rm(tempDir, { recursive: true, force: true });
+});
+
+describe("existing regular file", () => {
+  it("approves a bare unquoted reference", async () => {
+    const file = join(tempDir, "todo.md");
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`check ${file} please`, file, projectRoot);
+
+    expect(result.approved).toBe(true);
+    expect(result.isDirectory).toBe(false);
+  });
+
+  it("approves an @-marked reference", async () => {
+    const file = join(tempDir, "todo.md");
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`check @${file} please`, file, projectRoot);
+
+    expect(result.approved).toBe(true);
+    expect(result.isDirectory).toBe(false);
+  });
+
+  it("approves an @-marked quoted reference with spaces", async () => {
+    const file = join(tempDir, "my notes.md");
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`check @"${file}" please`, file, projectRoot);
+
+    expect(result.approved).toBe(true);
+  });
+
+  it("approves a bare double-quoted reference with spaces", async () => {
+    const file = join(tempDir, "my notes.md");
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`check "${file}" please`, file, projectRoot);
+
+    expect(result.approved).toBe(true);
+  });
+});
+
+describe("existing directory", () => {
+  it("approves an @-marked reference", async () => {
+    const dir = join(tempDir, "notes");
+    await mkdir(dir);
+
+    const result = await checkPromptApproval(`check @${dir} please`, dir, projectRoot);
+
+    expect(result.approved).toBe(true);
+    expect(result.isDirectory).toBe(true);
+  });
+
+  it("does not approve a bare unquoted reference", async () => {
+    const dir = join(tempDir, "notes");
+    await mkdir(dir);
+
+    const result = await checkPromptApproval(`check ${dir} please`, dir, projectRoot);
+
+    expect(result.approved).toBe(false);
+    expect(result.isDirectory).toBe(true);
+  });
+});
+
+describe("missing target", () => {
+  it("never approves, even when @-marked and textually present", async () => {
+    const missing = join(tempDir, "nonexistent.md");
+
+    const result = await checkPromptApproval(`check @${missing} please`, missing, projectRoot);
+
+    expect(result.approved).toBe(false);
+    expect(result.isDirectory).toBe(false);
+  });
+});
+
+describe("adjacency and delimiter rules", () => {
+  it("does not treat @ as a marker when separated from the path by a space", async () => {
+    const dir = join(tempDir, "notes");
+    await mkdir(dir);
+
+    // "@ /path" — space after @ breaks adjacency; directory stays bare (unapproved).
+    const result = await checkPromptApproval(`check @ ${dir} please`, dir, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+
+  it("strips trailing sentence punctuation from an unquoted bare candidate", async () => {
+    const file = join(tempDir, "todo.md");
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`Please check ${file}.`, file, projectRoot);
+
+    expect(result.approved).toBe(true);
+  });
+
+  it("strips enclosing parens/comma from an unquoted @-marked candidate", async () => {
+    const file = join(tempDir, "todo.md");
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`(see @${file}), thanks`, file, projectRoot);
+
+    expect(result.approved).toBe(true);
+  });
+
+  it("requires quoting when the path contains whitespace", async () => {
+    const file = join(tempDir, "my notes.md");
+    await writeFile(file, "content");
+
+    // Unquoted mention of a path with an embedded space does not survive extraction as one token.
+    const result = await checkPromptApproval(`check ${file} please`, file, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+});
+
+describe("prefix collision", () => {
+  it("does not approve a target that is a strict prefix of a mentioned path", async () => {
+    const a = join(tempDir, "a");
+    const ab = join(tempDir, "ab");
+    await writeFile(a, "content");
+    await writeFile(ab, "content");
+
+    const result = await checkPromptApproval(`check ${ab}`, a, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+});
+
+describe("symlink aliases", () => {
+  it("approves when the prompt references a symlink resolving to the same real target", async () => {
+    const real = join(tempDir, "real.md");
+    const link = join(tempDir, "link.md");
+    await writeFile(real, "content");
+    await symlink(real, link);
+
+    const result = await checkPromptApproval(`check ${link}`, real, projectRoot);
+
+    expect(result.approved).toBe(true);
+  });
+
+  it("approves when the target path is the symlink and the prompt references the real path", async () => {
+    const real = join(tempDir, "real.md");
+    const link = join(tempDir, "link.md");
+    await writeFile(real, "content");
+    await symlink(real, link);
+
+    const result = await checkPromptApproval(`check ${real}`, link, projectRoot);
+
+    expect(result.approved).toBe(true);
+  });
+});
+
+describe("no reference in prompt", () => {
+  it("does not approve when the message never mentions the path", async () => {
+    const file = join(tempDir, "todo.md");
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval("what's the weather today?", file, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+});
