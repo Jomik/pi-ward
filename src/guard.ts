@@ -3,6 +3,7 @@ import type { GrantStore } from "./grants.js";
 import { resolvePath } from "./resolve.js";
 import type { Operation, ParsedRule } from "./rules.js";
 import { isSelfProtected } from "./self-protect.js";
+import { isDescendantOf } from "./walk.js";
 
 export type GuardResult =
   | { allowed: true }
@@ -24,6 +25,7 @@ export async function checkPath(
   rules: ParsedRule[],
   projectRoot: string,
   grants?: GrantStore,
+  callScopedRoot?: string,
 ): Promise<GuardResult> {
   const resolved = await resolvePath(inputPath, projectRoot);
 
@@ -69,6 +71,13 @@ export async function checkPath(
       reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user (session)`,
       grantable: false,
     };
+  }
+
+  // Call-scoped recursive approval (e.g. a grep run against a prompt-approved
+  // directory): permits descendants of that root for this call only, after
+  // explicit rules and session grants/denies have already had the chance to win.
+  if (callScopedRoot !== undefined && isDescendantOf(callScopedRoot, resolved.path)) {
+    return { allowed: true };
   }
 
   return {

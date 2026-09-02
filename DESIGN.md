@@ -248,11 +248,12 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 
 1. Path resolution (symlink resolve, broken symlink check).
 2. Self-protection check (ward config files are always write-protected).
-3. Rule evaluation (first-match-wins). If a deny rule matches → hard deny, no prompt.
+3. Rule evaluation (first-match-wins): an allow rule match short-circuits to allow; a deny rule match hard-blocks, no prompt.
 4. If baseline would deny (path outside project root):
    a. Check session grants → if match, allow silently.
    b. Check session denies → if match, deny silently.
-   c. Prompt user → apply their choice.
+   c. For reads only, check prompt-derived approval (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants) below) → if match, allow silently, scoped to the current turn.
+   d. Prompt user → apply their choice.
 5. If baseline would allow (inside project root) → allow.
 
 **Key constraints:**
@@ -261,7 +262,52 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 - Grants cannot override explicit deny rules — only baseline denies are grantable.
 - Directory grants (`directory: true`) cover the path and everything under it.
 - Operation semantics mirror rules: a write grant covers read+write; a read deny blocks both.
-- When no UI is available (non-interactive mode), baseline denies remain blocked.
+- When no UI is available (non-interactive mode), baseline denies remain blocked, except where prompt-derived read approval applies (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants) below) — that check needs no UI, only a real user turn.
+
+### Prompt-Derived Approval (Implicit Turn-Scoped Grants)
+
+Interactive approval and `/ward` both require the user to act out-of-band from their request. But often the user's own message already names the path they want read (e.g. "check @/tmp/notes/todo.md") — asking them to also click through a prompt is redundant. Prompt-derived approval treats a concrete matching path reference in the user's own message as consent for that reference, scoped to the turn in which it was made.
+
+**Trigger:** only reached for a read that is otherwise grantable — i.e. baseline-denied (outside project root) with no explicit deny rule and no resolution failure. It sits between session grants/denies and the interactive prompt in the evaluation order. (Self-protection is irrelevant here: it only ever write-protects config files, and this check never covers writes.)
+
+**Remembered input, not a turn model:** the extension keeps a single in-memory value — the text of the latest genuine user input seen this runtime. "Genuine" means the input arrived via an interactive or RPC source; extension-originated input (e.g. injected by a command or tool) is never genuine — it neither becomes the remembered value nor clears it. Every subsequent genuine input replaces the previous one, so the check always compares against the single most recent genuine message, whatever tool calls have happened since. There is no separate notion of conversation branch or turn boundary tracked beyond this: "current turn" below just means "since the last genuine input was recorded and until the next one arrives".
+
+**Source of truth:** the latest genuine (interactive/RPC) input text remembered by the extension, as described above.
+
+**Reference grammar:**
+
+A reference must be adjacent to its own delimiters — no matching across surrounding prose. Four forms are recognized:
+
+| Form | Example | Notes |
+|------|---------|-------|
+| `@path` | `@/tmp/notes/todo.md` | `@` immediately precedes the path token, no space |
+| `@"path with spaces"` | `@"/tmp/my notes/todo.md"` | opening quote immediately follows `@`; required when the path contains whitespace, but also permitted for a whitespace-free path |
+| `path` | `/tmp/notes/todo.md` | bare, unquoted — a single whitespace-delimited token |
+| `"path with spaces"` | `"/tmp/my notes/todo.md"` | bare, double-quoted; required when the path contains whitespace, but also permitted for a whitespace-free path — quoting a single-token path is parsed as that quoted form once, not additionally as an unquoted candidate |
+
+Rules:
+- `@` must be immediately adjacent to the path or its opening quote — `@ /tmp/x` (space after `@`) is not a reference.
+- Surrounding whitespace is never part of the path. Wrapping prose punctuation immediately adjacent to an unquoted candidate (a sentence-ending period, a trailing comma or colon, an enclosing parenthesis) is not part of the path either — it is stripped before resolution, never matched against.
+- A path that itself contains a character that reads as boundary punctuation (an embedded space, a literal comma, a trailing period, a closing paren) does not reliably survive unquoted extraction and must be written quoted (`@"..."` or `"..."`) to be recognized.
+- Extraction operates on the latest genuine user message only, per the definition above. Every substring matching one of the four forms is extracted as a candidate, independently of the others. Each candidate is resolved/canonicalized on its own (symlinks resolved, made absolute, as elsewhere in this design), and independently compared to the tool's own independently canonicalized target path. **Only this final canonical-path equality is spelling-independent** — everything above (delimiter adjacency, quoting, punctuation stripping) operates on the literal message text, not on any canonicalized form.
+
+**What is approved:**
+
+| Target on disk | Marked with `@` | Bare (no `@`) |
+|---|---|---|
+| Existing regular file | Approved | Approved |
+| Existing directory | Approved | Not approved |
+| Missing / unknown | Not approved | Not approved |
+
+A bare reference to an existing file is accepted because it authorizes only that exact file — there is no breadth to abuse. A bare reference to a directory is treated as ambiguous prose (e.g. mentioning a directory name in passing) and does not grant access; the `@` marker is required to treat a directory as an intended read target, because a directory approval can extend to recursive tools operating over everything beneath it (see below), which is not a risk a bare mention should silently carry. A missing or otherwise unresolvable target is never approved, regardless of marker — resolution must succeed against a real, existing file or directory. Writes are never eligible for prompt-derived approval — only read operations reach this check.
+
+Because matching compares each candidate's own canonical path against the tool's canonical target, prefix relationships never confuse it: a message containing only `/tmp/ab` never approves a tool call targeting `/tmp/a` — the candidate `/tmp/ab` and the target `/tmp/a` canonicalize to distinct paths, and no other candidate in the message resolves to `/tmp/a`.
+
+**Directory approval and recursive tools (call-scoped, not a grant):** when a directory reference is approved, that approval is captured as ephemeral context tied to the single tool call being evaluated — it is never written to the `GrantStore` and is not a standing grant. For a recursive tool (`grep`/`find`/`ls`) whose root is that approved directory, the same call's output filtering (see [Recursive Read Tools](#recursive-read-tools-output-filtering)) may treat a result entry attributable to a path under the approved root as covered by this context, without re-deriving approval from the message for each entry — but explicit deny rules are still applied to every entry regardless. Once that tool call's result has been filtered and returned, the context is discarded. It confers nothing on any other, later tool call: a separate call targeting a descendant path must independently satisfy the reference grammar against the user's message (its own path text present, or its own root independently approved). `find`/`ls` output filtering, once implemented, uses this same call-scoped context.
+
+**Precedence and non-grantable outcomes:** this check only ever *adds* an allow at the point baseline would otherwise deny. It cannot override an explicit deny rule or a resolution failure — those remain non-grantable and are decided earlier in the evaluation order, before this check is ever reached.
+
+**Scope and lifetime:** approval derived this way is never written to the session `GrantStore` — it is not a grant that persists or shows up in `/ward list`. It is valid only while the message it was derived from remains the remembered latest genuine input. Repeated reads that match the same path are all allowed, each independently re-checked against the same source message rather than cached as a standing grant. As soon as the next genuine input is recorded, the approval lapses; a fresh check against the new remembered message is required for any further access to the same path.
 
 ### `/ward` Command (Proactive Session Grants)
 
@@ -289,15 +335,16 @@ The interactive approval flow prompts per-file. The `/ward` slash command lets t
 
 **Evaluation order (unchanged):**
 
-Fits into the existing step 4a — session grants checked before prompting:
+Fits into the existing step 4 — session grants checked before prompting:
 
 1. Path resolution
 2. Self-protection check
-3. Rule evaluation (explicit deny → hard block, no override)
+3. Rule evaluation (first-match-wins): an allow rule match short-circuits to allow; a deny rule match hard-blocks, no override
 4. Baseline deny?
    - a. Check session grants → `/ward` grants live here
    - b. Check session denies → `/ward deny` lives here
-   - c. Prompt user (if no grant/deny matches)
+   - c. For reads only, check prompt-derived approval (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants)) → turn-scoped, not stored
+   - d. Prompt user (if no grant/deny/approval matches)
 5. Baseline allow → allow
 
 **`/ward list` output:**
