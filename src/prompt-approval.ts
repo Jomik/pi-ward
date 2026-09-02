@@ -16,12 +16,12 @@ interface Candidate {
   marked: boolean;
 }
 
-// Matches, in priority order at each position: `@"quoted"`, `@bare`, `"quoted"`.
-// The `@` forms only match at a reference boundary (start of message, whitespace,
-// or an opening paren) so an `@` embedded inside another token (e.g. `admin@/tmp/dir`)
-// is never treated as a marker. Bare unquoted tokens (not matched here) are recovered
-// from the remaining text.
-const REFERENCE_REGEX = /(?<=^|[\s(])@"([^"]*)"|(?<=^|[\s(])@(\S+)|"([^"]*)"/g;
+// Matches, in priority order at each position: `@"quoted"`, `@bare`, `"quoted"`,
+// and finally a bare unquoted token (any run of non-whitespace not claimed by
+// one of the prior forms). The `@` forms only match at a reference boundary
+// (start of message, whitespace, or an opening paren) so an `@` embedded
+// inside another token (e.g. `admin@/tmp/dir`) is never treated as a marker.
+const REFERENCE_REGEX = /(?<=^|[\s(])@"([^"]*)"|(?<=^|[\s(])@(\S+)|"([^"]*)"|(\S+)/g;
 
 /** Strip prose punctuation not considered part of an unquoted path candidate. */
 function stripBoundaryPunctuation(token: string): string {
@@ -31,36 +31,20 @@ function stripBoundaryPunctuation(token: string): string {
 /** Extract all candidate path references from a prompt message, per the reference grammar. */
 function extractCandidates(message: string): Candidate[] {
   const candidates: Candidate[] = [];
-  const consumed: Array<[number, number]> = [];
 
   REFERENCE_REGEX.lastIndex = 0;
   let match: RegExpExecArray | null = REFERENCE_REGEX.exec(message);
   while (match !== null) {
-    consumed.push([match.index, match.index + match[0].length]);
     if (match[1] !== undefined) {
       candidates.push({ raw: match[1], marked: true });
     } else if (match[2] !== undefined) {
       candidates.push({ raw: stripBoundaryPunctuation(match[2]), marked: true });
     } else if (match[3] !== undefined) {
       candidates.push({ raw: match[3], marked: false });
+    } else if (match[4] !== undefined) {
+      candidates.push({ raw: stripBoundaryPunctuation(match[4]), marked: false });
     }
     match = REFERENCE_REGEX.exec(message);
-  }
-
-  // Recover bare unquoted tokens from the text outside already-consumed spans.
-  let remainder = "";
-  let cursor = 0;
-  for (const [start, end] of consumed) {
-    remainder += `${message.slice(cursor, start)} `;
-    cursor = end;
-  }
-  remainder += message.slice(cursor);
-
-  for (const token of remainder.split(/\s+/)) {
-    if (!token) continue;
-    const stripped = stripBoundaryPunctuation(token);
-    if (!stripped) continue;
-    candidates.push({ raw: stripped, marked: false });
   }
 
   return candidates;

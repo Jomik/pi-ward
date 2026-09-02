@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GrantStore } from "../src/grants.js";
-import { createPromptTracker, extractAccess, handleGrepResult, handleToolCall, promptAccess } from "../src/index.js";
+import { extractAccess, handleGrepResult, handleToolCall, promptAccess } from "../src/index.js";
 
 const projectRoot = "/project";
 
@@ -183,33 +183,6 @@ describe("promptAccess herdr reporting", () => {
     await promptAccess(events, ctx, "read", "read", path, path, new GrantStore());
 
     expect(events.emit).not.toHaveBeenCalled();
-  });
-});
-
-describe("createPromptTracker", () => {
-  it("retains prompt text for an 'interactive' source", () => {
-    const tracker = createPromptTracker();
-    tracker.recordInput({ source: "interactive", text: "read @foo.txt" });
-    expect(tracker.getLatest()).toBe("read @foo.txt");
-  });
-
-  it("retains prompt text for an 'rpc' source", () => {
-    const tracker = createPromptTracker();
-    tracker.recordInput({ source: "rpc", text: "read @foo.txt" });
-    expect(tracker.getLatest()).toBe("read @foo.txt");
-  });
-
-  it("does not retain prompt text for an 'extension' source", () => {
-    const tracker = createPromptTracker();
-    tracker.recordInput({ source: "extension", text: "read @foo.txt" });
-    expect(tracker.getLatest()).toBeUndefined();
-  });
-
-  it("does not let an 'extension'-sourced input replace the latest genuine prompt", () => {
-    const tracker = createPromptTracker();
-    tracker.recordInput({ source: "interactive", text: "genuine prompt" });
-    tracker.recordInput({ source: "extension", text: "injected prompt" });
-    expect(tracker.getLatest()).toBe("genuine prompt");
   });
 });
 

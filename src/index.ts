@@ -57,31 +57,6 @@ export function extractAccess(
 /** Genuine (non-extension-originated) input sources that qualify as prompt approval context. */
 const GENUINE_INPUT_SOURCES = new Set(["interactive", "rpc"]);
 
-/**
- * Tracks the latest genuine prompt text across `input` events, for use by
- * `tool_call` handling. "extension"-originated input (e.g. via sendUserMessage)
- * must never become an approval source and must not replace the latest
- * genuine prompt.
- */
-export interface PromptTracker {
-  recordInput(event: { source: string; text: string }): void;
-  getLatest(): string | undefined;
-}
-
-export function createPromptTracker(): PromptTracker {
-  let latest: string | undefined;
-  return {
-    recordInput(event) {
-      if (GENUINE_INPUT_SOURCES.has(event.source)) {
-        latest = event.text;
-      }
-    },
-    getLatest() {
-      return latest;
-    },
-  };
-}
-
 export async function promptAccess(
   events: { emit(channel: string, data: unknown): void },
   ctx: { hasUI: boolean; ui: { select(msg: string, options: string[]): Promise<string | undefined> } },
@@ -282,7 +257,7 @@ const factory: ExtensionFactory = async (pi) => {
   const homeDir = await realpath(homedir());
   const { rules } = await loadConfig(projectRoot, homeDir);
   const grants = new GrantStore();
-  const promptTracker = createPromptTracker();
+  let latestPrompt: string | undefined;
   const callContexts = new Map<string, string>();
 
   pi.registerTool(createDeleteTool(projectRoot));
@@ -324,7 +299,9 @@ const factory: ExtensionFactory = async (pi) => {
   });
 
   pi.on("input", async (event, _ctx) => {
-    promptTracker.recordInput(event);
+    if (GENUINE_INPUT_SOURCES.has(event.source)) {
+      latestPrompt = event.text;
+    }
     return undefined;
   });
 
@@ -336,7 +313,7 @@ const factory: ExtensionFactory = async (pi) => {
       projectRoot,
       homeDir,
       grants,
-      latestPrompt: promptTracker.getLatest(),
+      latestPrompt,
       callContexts,
     }),
   );
