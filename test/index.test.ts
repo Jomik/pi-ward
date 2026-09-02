@@ -5,14 +5,62 @@ import type { ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-a
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GrantStore } from "../src/grants.js";
 import { extractAccess, handleGrepResult, handleToolCall, promptAccess } from "../src/index.js";
+import { parsePattern } from "../src/pattern.js";
+import type { ParsedRule } from "../src/rules.js";
 
 const projectRoot = "/project";
 
-/**
- * Build a minimal ToolCallEvent for a standard tool.
- */
-function makeEvent(toolName: string, input: Record<string, unknown>): ToolCallEvent {
-  return { type: "tool_call", toolCallId: "test-id", toolName, input } as ToolCallEvent;
+/** Build a minimal ToolCallEvent. */
+function makeEvent(toolName: string, input: Record<string, unknown>, toolCallId = "test-id"): ToolCallEvent {
+  return { type: "tool_call", toolCallId, toolName, input } as ToolCallEvent;
+}
+
+const makeReadEvent = (path: string) => makeEvent("read", { path });
+const makeWriteEvent = (path: string) => makeEvent("write", { path, content: "x" });
+const makeGrepEvent = (path: string, toolCallId = "test-id") => makeEvent("grep", { pattern: "foo", path }, toolCallId);
+
+/** A `ctx` with no UI (default) or a UI whose `select` follows the given script. */
+function makeCtx(select?: (msg: string) => Promise<string | undefined>) {
+  return {
+    hasUI: select !== undefined,
+    ui: { select: vi.fn(select ?? (async () => undefined)) },
+  };
+}
+
+/** Create the temp `<prefix>/project` and `<prefix>/outside` dirs used across guard tests. */
+async function makeTestDirs(prefix: string) {
+  const base = join(tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  await mkdir(join(base, "project"), { recursive: true });
+  await mkdir(join(base, "outside"), { recursive: true });
+  const tempDir = await realpath(base);
+  return { tempDir, testProjectRoot: join(tempDir, "project"), outsideDir: join(tempDir, "outside") };
+}
+
+/** Build a `handleToolCall` deps object, filling in the common projectRoot/homeDir pairing. */
+function baseDeps(testProjectRoot: string, tempDir: string, grants: GrantStore, extra: Record<string, unknown> = {}) {
+  return { rules: [], projectRoot: testProjectRoot, homeDir: tempDir, grants, latestPrompt: undefined, ...extra };
+}
+
+/** Build a `handleGrepResult` deps object. */
+function grepResultDeps(
+  testProjectRoot: string,
+  grants: GrantStore,
+  callContexts: Map<string, string>,
+  rules: ParsedRule[] = [],
+) {
+  return { rules, projectRoot: testProjectRoot, grants, callContexts };
+}
+
+/** A single-pattern deny rule, as produced by config loading. */
+function denyRule(pattern: string, configDir: string, homeDir: string) {
+  return {
+    pattern: parsePattern(pattern),
+    rawPattern: pattern,
+    operations: "read" as const,
+    effect: "deny" as const,
+    configDir,
+    homeDir,
+  };
 }
 
 describe("extractAccess", () => {
@@ -192,46 +240,12 @@ describe("handleToolCall", () => {
   let outsideDir: string;
 
   beforeEach(async () => {
-    const base = join(tmpdir(), `pi-ward-index-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    await mkdir(join(base, "project"), { recursive: true });
-    await mkdir(join(base, "outside"), { recursive: true });
-    tempDir = await realpath(base);
-    testProjectRoot = join(tempDir, "project");
-    outsideDir = join(tempDir, "outside");
+    ({ tempDir, testProjectRoot, outsideDir } = await makeTestDirs("pi-ward-index-test"));
   });
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
   });
-
-  function makeReadEvent(path: string): ToolCallEvent {
-    return { type: "tool_call", toolCallId: "test-id", toolName: "read", input: { path } } as ToolCallEvent;
-  }
-
-  function makeGrepEvent(path: string, toolCallId = "test-id"): ToolCallEvent {
-    return {
-      type: "tool_call",
-      toolCallId,
-      toolName: "grep",
-      input: { pattern: "foo", path },
-    } as ToolCallEvent;
-  }
-
-  function makeWriteEvent(path: string): ToolCallEvent {
-    return {
-      type: "tool_call",
-      toolCallId: "test-id",
-      toolName: "write",
-      input: { path, content: "x" },
-    } as ToolCallEvent;
-  }
-
-  function makeCtx(select?: (msg: string) => Promise<string | undefined>) {
-    return {
-      hasUI: select !== undefined,
-      ui: { select: vi.fn(select ?? (async () => undefined)) },
-    };
-  }
 
   const events = { emit: vi.fn() };
 
@@ -241,13 +255,12 @@ describe("handleToolCall", () => {
     const grants = new GrantStore();
     const ctx = makeCtx(); // hasUI: false — would otherwise hard-block
 
-    const result = await handleToolCall(makeReadEvent(file), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `read @${file}`,
-    });
+    const result = await handleToolCall(
+      makeReadEvent(file),
+      ctx,
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `read @${file}` }),
+    );
 
     expect(result).toBeUndefined();
     expect(ctx.ui.select).not.toHaveBeenCalled();
@@ -258,15 +271,13 @@ describe("handleToolCall", () => {
     const file = join(outsideDir, "secret.txt");
     await writeFile(file, "secret");
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
 
-    const result = await handleToolCall(makeReadEvent(file), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `read @${file}`,
-    });
+    const result = await handleToolCall(
+      makeReadEvent(file),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `read @${file}` }),
+    );
 
     expect(result).toBeUndefined();
   });
@@ -275,14 +286,8 @@ describe("handleToolCall", () => {
     const file = join(outsideDir, "secret.txt");
     await writeFile(file, "secret");
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
-    const deps = {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `read @${file}`,
-    };
+    const ctx = makeCtx();
+    const deps = baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `read @${file}` });
 
     const first = await handleToolCall(makeReadEvent(file), ctx, events, deps);
     const second = await handleToolCall(makeReadEvent(file), ctx, events, deps);
@@ -297,13 +302,12 @@ describe("handleToolCall", () => {
     const grants = new GrantStore();
     const ctx = makeCtx(async (msg) => (msg.startsWith("Access") ? "Approve" : "Once"));
 
-    const result = await handleToolCall(makeReadEvent(file), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: "unrelated prompt text",
-    });
+    const result = await handleToolCall(
+      makeReadEvent(file),
+      ctx,
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: "unrelated prompt text" }),
+    );
 
     expect(result).toBeUndefined();
     expect(ctx.ui.select).toHaveBeenCalled();
@@ -313,15 +317,13 @@ describe("handleToolCall", () => {
     const file = join(outsideDir, "secret.txt");
     await writeFile(file, "secret");
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
 
-    const result = await handleToolCall(makeReadEvent(file), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: undefined,
-    });
+    const result = await handleToolCall(
+      makeReadEvent(file),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: undefined }),
+    );
 
     expect(result).toEqual({
       block: true,
@@ -332,15 +334,13 @@ describe("handleToolCall", () => {
   it("does not consult the prompt for write operations (unchanged behavior)", async () => {
     const file = join(outsideDir, "output.txt");
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
 
-    const result = await handleToolCall(makeWriteEvent(file), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `write @${file}`,
-    });
+    const result = await handleToolCall(
+      makeWriteEvent(file),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `write @${file}` }),
+    );
 
     expect(result).toEqual({
       block: true,
@@ -349,29 +349,17 @@ describe("handleToolCall", () => {
   });
 
   it("does not consult the prompt for an explicit deny rule (hard deny, unchanged behavior)", async () => {
-    const { parsePattern } = await import("../src/pattern.js");
     const file = join(testProjectRoot, ".env.local");
     await writeFile(file, "SECRET=foo");
-    const rules = [
-      {
-        pattern: parsePattern(".env*"),
-        rawPattern: ".env*",
-        operations: "read" as const,
-        effect: "deny" as const,
-        configDir: testProjectRoot,
-        homeDir: tempDir,
-      },
-    ];
+    const rules = [denyRule(".env*", testProjectRoot, tempDir)];
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
 
-    const result = await handleToolCall(makeReadEvent(file), ctx, events, {
-      rules,
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `read @${file}`,
-    });
+    const result = await handleToolCall(
+      makeReadEvent(file),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { rules, latestPrompt: `read @${file}` }),
+    );
 
     expect(result).toEqual({
       block: true,
@@ -385,15 +373,13 @@ describe("handleToolCall", () => {
     const grants = new GrantStore();
     const resolved = await realpath(file);
     grants.addDeny(resolved, "read", false);
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
 
-    const result = await handleToolCall(makeReadEvent(file), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `read @${file}`,
-    });
+    const result = await handleToolCall(
+      makeReadEvent(file),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `read @${file}` }),
+    );
 
     expect(result).toEqual({
       block: true,
@@ -410,17 +396,14 @@ describe("handleToolCall", () => {
     await mkdir(dir, { recursive: true });
     const resolvedDir = await realpath(dir);
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
     const callContexts = new Map<string, string>();
 
-    const result = await handleToolCall(makeGrepEvent(dir, "call-1"), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `look in @${dir}`,
-      callContexts,
-    });
+    const result = await handleToolCall(
+      makeGrepEvent(dir, "call-1"),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `look in @${dir}`, callContexts }),
+    );
 
     expect(result).toBeUndefined();
     expect(callContexts.get("call-1")).toBe(resolvedDir);
@@ -430,25 +413,17 @@ describe("handleToolCall", () => {
     const dir = join(outsideDir, "docs");
     await mkdir(dir, { recursive: true });
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
     const callContexts = new Map<string, string>();
 
     // 'find' also maps to a directory-targeted read, but only grep should record context.
-    const findEvent = {
-      type: "tool_call",
-      toolCallId: "call-2",
-      toolName: "find",
-      input: { pattern: "*.ts", path: dir },
-    } as ToolCallEvent;
+    const findEvent = makeEvent("find", { pattern: "*.ts", path: dir }, "call-2");
 
-    await handleToolCall(findEvent, ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `look in @${dir}`,
-      callContexts,
-    });
+    await handleToolCall(
+      findEvent,
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `look in @${dir}`, callContexts }),
+    );
 
     expect(callContexts.size).toBe(0);
   });
@@ -458,17 +433,14 @@ describe("handleToolCall", () => {
     await writeFile(file, "data");
     const resolvedFile = await realpath(file);
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
     const callContexts = new Map<string, string>();
 
-    await handleToolCall(makeGrepEvent(file, "call-3"), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `look in @${file}`,
-      callContexts,
-    });
+    await handleToolCall(
+      makeGrepEvent(file, "call-3"),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `look in @${file}`, callContexts }),
+    );
 
     expect(callContexts.get("call-3")).toBe(resolvedFile);
   });
@@ -481,25 +453,21 @@ describe("handleToolCall", () => {
     const resolvedA = await realpath(dirA);
     const resolvedB = await realpath(dirB);
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
     const callContexts = new Map<string, string>();
+    const latestPrompt = `look in @${dirA} and @${dirB}`;
 
-    await handleToolCall(makeGrepEvent(dirA, "call-a"), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `look in @${dirA} and @${dirB}`,
-      callContexts,
-    });
-    await handleToolCall(makeGrepEvent(dirB, "call-b"), ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `look in @${dirA} and @${dirB}`,
-      callContexts,
-    });
+    await handleToolCall(
+      makeGrepEvent(dirA, "call-a"),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt, callContexts }),
+    );
+    await handleToolCall(
+      makeGrepEvent(dirB, "call-b"),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt, callContexts }),
+    );
 
     expect(callContexts.get("call-a")).toBe(resolvedA);
     expect(callContexts.get("call-b")).toBe(resolvedB);
@@ -513,12 +481,7 @@ describe("handleToolCall + handleGrepResult (end-to-end)", () => {
   const events = { emit: vi.fn() };
 
   beforeEach(async () => {
-    const base = join(tmpdir(), `pi-ward-e2e-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    await mkdir(join(base, "project"), { recursive: true });
-    await mkdir(join(base, "outside"), { recursive: true });
-    tempDir = await realpath(base);
-    testProjectRoot = join(tempDir, "project");
-    outsideDir = join(tempDir, "outside");
+    ({ tempDir, testProjectRoot, outsideDir } = await makeTestDirs("pi-ward-e2e-test"));
   });
 
   afterEach(async () => {
@@ -530,24 +493,14 @@ describe("handleToolCall + handleGrepResult (end-to-end)", () => {
     await writeFile(file, "hello world");
     const resolvedFile = await realpath(file);
     const grants = new GrantStore();
-    const ctx = { hasUI: false, ui: { select: vi.fn() } };
     const callContexts = new Map<string, string>();
 
-    const callEvent: ToolCallEvent = {
-      type: "tool_call",
-      toolCallId: "call-e2e",
-      toolName: "grep",
-      input: { pattern: "hello", path: file },
-    } as ToolCallEvent;
-
-    const callResult = await handleToolCall(callEvent, ctx, events, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      homeDir: tempDir,
-      grants,
-      latestPrompt: `look in @${file}`,
-      callContexts,
-    });
+    const callResult = await handleToolCall(
+      makeGrepEvent(file, "call-e2e"),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `look in @${file}`, callContexts }),
+    );
 
     expect(callResult).toBeUndefined();
     expect(callContexts.get("call-e2e")).toBe(resolvedFile);
@@ -560,12 +513,7 @@ describe("handleToolCall + handleGrepResult (end-to-end)", () => {
       content: [{ type: "text", text: "notes.txt:1: hello world" }],
     } as unknown as ToolResultEvent;
 
-    const grepResult = await handleGrepResult(resultEvent, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      grants,
-      callContexts,
-    });
+    const grepResult = await handleGrepResult(resultEvent, grepResultDeps(testProjectRoot, grants, callContexts));
 
     expect(grepResult).toBeUndefined();
     expect(callContexts.has("call-e2e")).toBe(false);
@@ -578,12 +526,7 @@ describe("handleGrepResult", () => {
   let outsideDir: string;
 
   beforeEach(async () => {
-    const base = join(tmpdir(), `pi-ward-grep-result-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    await mkdir(join(base, "project"), { recursive: true });
-    await mkdir(join(base, "outside"), { recursive: true });
-    tempDir = await realpath(base);
-    testProjectRoot = join(tempDir, "project");
-    outsideDir = join(tempDir, "outside");
+    ({ tempDir, testProjectRoot, outsideDir } = await makeTestDirs("pi-ward-grep-result-test"));
   });
 
   afterEach(async () => {
@@ -608,39 +551,22 @@ describe("handleGrepResult", () => {
     const callContexts = new Map<string, string>([["call-1", resolvedRoot]]);
 
     const event = makeResultEvent("call-1", outsideDir, "data.txt:1: hello");
-    const result = await handleGrepResult(event, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      grants: new GrantStore(),
-      callContexts,
-    });
+    const result = await handleGrepResult(event, grepResultDeps(testProjectRoot, new GrantStore(), callContexts));
 
     expect(result).toBeUndefined();
   });
 
   it("hides an explicitly denied descendant even under the approved root", async () => {
-    const { parsePattern } = await import("../src/pattern.js");
     await writeFile(join(outsideDir, ".env"), "SECRET=1");
     const resolvedRoot = await realpath(outsideDir);
     const callContexts = new Map<string, string>([["call-1", resolvedRoot]]);
-    const rules = [
-      {
-        pattern: parsePattern(".env"),
-        rawPattern: ".env",
-        operations: "read" as const,
-        effect: "deny" as const,
-        configDir: testProjectRoot,
-        homeDir: tempDir,
-      },
-    ];
+    const rules = [denyRule(".env", testProjectRoot, tempDir)];
 
     const event = makeResultEvent("call-1", outsideDir, ".env:1: SECRET=1");
-    const result = await handleGrepResult(event, {
-      rules,
-      projectRoot: testProjectRoot,
-      grants: new GrantStore(),
-      callContexts,
-    });
+    const result = await handleGrepResult(
+      event,
+      grepResultDeps(testProjectRoot, new GrantStore(), callContexts, rules),
+    );
 
     expect(result).toBeDefined();
     expect(result?.content[0]).toMatchObject({ type: "text" });
@@ -653,12 +579,7 @@ describe("handleGrepResult", () => {
     const callContexts = new Map<string, string>();
 
     const event = makeResultEvent("call-1", outsideDir, "data.txt:1: hello");
-    const result = await handleGrepResult(event, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      grants: new GrantStore(),
-      callContexts,
-    });
+    const result = await handleGrepResult(event, grepResultDeps(testProjectRoot, new GrantStore(), callContexts));
 
     expect(result).toBeDefined();
     const text = (result?.content[0] as { text: string }).text;
@@ -670,12 +591,10 @@ describe("handleGrepResult", () => {
     const resolvedRoot = await realpath(outsideDir);
     const callContexts = new Map<string, string>([["call-1", resolvedRoot]]);
 
-    await handleGrepResult(makeResultEvent("call-1", outsideDir, "data.txt:1: hello"), {
-      rules: [],
-      projectRoot: testProjectRoot,
-      grants: new GrantStore(),
-      callContexts,
-    });
+    await handleGrepResult(
+      makeResultEvent("call-1", outsideDir, "data.txt:1: hello"),
+      grepResultDeps(testProjectRoot, new GrantStore(), callContexts),
+    );
 
     expect(callContexts.has("call-1")).toBe(false);
   });
@@ -701,12 +620,7 @@ describe("handleGrepResult", () => {
       isError: false,
     } as unknown as ToolResultEvent;
 
-    const result = await handleGrepResult(badEvent, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      grants: new GrantStore(),
-      callContexts,
-    });
+    const result = await handleGrepResult(badEvent, grepResultDeps(testProjectRoot, new GrantStore(), callContexts));
 
     expect(result?.content[0]).toMatchObject({ text: expect.stringContaining("filter error") });
     expect(callContexts.has("call-1")).toBe(false);
@@ -718,12 +632,7 @@ describe("handleGrepResult", () => {
     const callContexts = new Map<string, string>([["call-1", resolvedRoot]]);
 
     const event = makeResultEvent("call-2", outsideDir, "data.txt:1: hello");
-    const result = await handleGrepResult(event, {
-      rules: [],
-      projectRoot: testProjectRoot,
-      grants: new GrantStore(),
-      callContexts,
-    });
+    const result = await handleGrepResult(event, grepResultDeps(testProjectRoot, new GrantStore(), callContexts));
 
     expect(result).toBeDefined();
     const text = (result?.content[0] as { text: string }).text;

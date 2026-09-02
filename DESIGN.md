@@ -270,9 +270,9 @@ Interactive approval and `/ward` both require the user to act out-of-band from t
 
 **Trigger:** only reached for a read that is otherwise grantable — i.e. baseline-denied (outside project root) with no explicit deny rule and no resolution failure. It sits between session grants/denies and the interactive prompt in the evaluation order. (Self-protection is irrelevant here: it only ever write-protects config files, and this check never covers writes.)
 
-**User turn and active branch:** a *user turn* is the period beginning when a genuine, interactive/RPC user input becomes the prompt driving the active agent run, continuing through every tool call and tool result that run produces, and ending only when the next genuine user input becomes current. The *active branch* is the conversation branch containing that driving message. Genuineness is determined by input provenance captured at ingestion — when a message first enters the conversation, it is tagged with where it came from. A message tagged as extension-originated, or as inserted by tooling on the user's behalf, is never treated as opening or continuing a turn, regardless of how it later appears in the transcript (even if it looks like it came from the user).
+**Remembered input, not a turn model:** the extension keeps a single in-memory value — the text of the latest genuine user input seen this runtime. "Genuine" means the input arrived via an interactive or RPC source; extension-originated input (e.g. injected by a command or tool) is never genuine — it neither becomes the remembered value nor clears it. Every subsequent genuine input replaces the previous one, so the check always compares against the single most recent genuine message, whatever tool calls have happened since. There is no separate notion of conversation branch or turn boundary tracked beyond this: "current turn" below just means "since the last genuine input was recorded and until the next one arrives".
 
-**Source of truth:** the latest genuine user message on the active branch — the message that opened the current turn, per the definition above.
+**Source of truth:** the latest genuine (interactive/RPC) input text remembered by the extension, as described above.
 
 **Reference grammar:**
 
@@ -307,7 +307,7 @@ Because matching compares each candidate's own canonical path against the tool's
 
 **Precedence and non-grantable outcomes:** this check only ever *adds* an allow at the point baseline would otherwise deny. It cannot override an explicit deny rule or a resolution failure — those remain non-grantable and are decided earlier in the evaluation order, before this check is ever reached.
 
-**Scope and lifetime:** approval derived this way is never written to the session `GrantStore` — it is not a grant that persists or shows up in `/ward list`. It is valid only while the message it was derived from remains the latest genuine user message on the active branch, i.e. for the duration of that user turn. Repeated reads within that same turn that match the same path are all allowed, each independently re-checked against the same source message rather than cached as a standing grant. As soon as the next genuine user message becomes current, the approval lapses; a fresh check against the new latest message is required for any further access to the same path.
+**Scope and lifetime:** approval derived this way is never written to the session `GrantStore` — it is not a grant that persists or shows up in `/ward list`. It is valid only while the message it was derived from remains the remembered latest genuine input. Repeated reads that match the same path are all allowed, each independently re-checked against the same source message rather than cached as a standing grant. As soon as the next genuine input is recorded, the approval lapses; a fresh check against the new remembered message is required for any further access to the same path.
 
 ### `/ward` Command (Proactive Session Grants)
 
