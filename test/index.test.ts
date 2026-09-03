@@ -387,6 +387,49 @@ describe("handleToolCall", () => {
     });
   });
 
+  it("does not consult the prompt for a descendant of an @-marked directory blocked by an explicit deny rule", async () => {
+    const dir = join(outsideDir, "notes");
+    const file = join(dir, "secret.txt");
+    await mkdir(dir);
+    await writeFile(file, "secret");
+    const rules = [denyRule("secret.txt", outsideDir, tempDir)];
+    const grants = new GrantStore();
+
+    const result = await handleToolCall(
+      makeReadEvent(file),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { rules, latestPrompt: `read @${dir}` }),
+    );
+
+    expect(result).toEqual({
+      block: true,
+      reason: expect.stringContaining("denied by policy"),
+    });
+  });
+
+  it("does not consult the prompt for a descendant of an @-marked directory blocked by a session deny", async () => {
+    const dir = join(outsideDir, "notes");
+    const file = join(dir, "secret.txt");
+    await mkdir(dir);
+    await writeFile(file, "secret");
+    const grants = new GrantStore();
+    const resolved = await realpath(file);
+    grants.addDeny(resolved, "read", false);
+
+    const result = await handleToolCall(
+      makeReadEvent(file),
+      makeCtx(),
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `read @${dir}` }),
+    );
+
+    expect(result).toEqual({
+      block: true,
+      reason: expect.stringContaining("denied by user (session)"),
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // call-scoped recursive directory context (callContexts)
   // ---------------------------------------------------------------------------
