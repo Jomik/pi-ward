@@ -80,6 +80,86 @@ describe("existing directory", () => {
   });
 });
 
+describe("directory subtree approval", () => {
+  it("approves a descendant file of an @-marked directory", async () => {
+    const dir = join(tempDir, "notes");
+    const file = join(dir, "todo.md");
+    await mkdir(dir);
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`check @${dir} please`, file, projectRoot);
+
+    expect(result.approved).toBe(true);
+    expect(result.isDirectory).toBe(false);
+  });
+
+  it("approves a descendant directory of an @-marked directory", async () => {
+    const dir = join(tempDir, "notes");
+    const sub = join(dir, "sub");
+    await mkdir(sub, { recursive: true });
+
+    const result = await checkPromptApproval(`check @${dir} please`, sub, projectRoot);
+
+    expect(result.approved).toBe(true);
+    expect(result.isDirectory).toBe(true);
+  });
+
+  it("approves a descendant via an @-marked quoted directory with spaces", async () => {
+    const dir = join(tempDir, "my notes");
+    const file = join(dir, "todo.md");
+    await mkdir(dir);
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`check @"${dir}" please`, file, projectRoot);
+
+    expect(result.approved).toBe(true);
+  });
+
+  it("does not approve a descendant of a bare (unmarked) directory reference", async () => {
+    const dir = join(tempDir, "notes");
+    const file = join(dir, "todo.md");
+    await mkdir(dir);
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`check ${dir} please`, file, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+
+  it("does not approve a sibling of an @-marked directory", async () => {
+    const dir = join(tempDir, "notes");
+    const sibling = join(tempDir, "other");
+    const file = join(sibling, "todo.md");
+    await mkdir(dir);
+    await mkdir(sibling);
+    await writeFile(file, "content");
+
+    const result = await checkPromptApproval(`check @${dir} please`, file, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+
+  it("does not approve the parent of an @-marked directory", async () => {
+    const dir = join(tempDir, "notes");
+    await mkdir(dir);
+
+    const result = await checkPromptApproval(`check @${dir} please`, tempDir, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+
+  it("does not approve another path from an @-marked file reference", async () => {
+    const file = join(tempDir, "todo.md");
+    const other = join(tempDir, "other.md");
+    await writeFile(file, "content");
+    await writeFile(other, "content");
+
+    const result = await checkPromptApproval(`check @${file} please`, other, projectRoot);
+
+    expect(result.approved).toBe(false);
+  });
+});
+
 describe("missing target", () => {
   it("never approves, even when @-marked and textually present", async () => {
     const missing = join(tempDir, "nonexistent.md");

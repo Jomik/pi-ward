@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { resolvePath } from "./resolve.js";
+import { isDescendantOf } from "./walk.js";
 
 /** Result of checking whether a prompt approves a resolved read target. */
 export interface PromptApprovalResult {
@@ -68,9 +69,16 @@ async function targetKind(resolvedPath: string): Promise<"file" | "directory" | 
  * - Existing regular files qualify whether bare or `@`-marked.
  * - Existing directories qualify only when `@`-marked.
  * - Missing/unresolvable targets never qualify.
+ * - An `@`-marked candidate that resolves to an existing directory also
+ *   approves any existing canonical descendant of that directory (not just
+ *   the directory itself). A bare directory candidate never authorizes
+ *   descendants. A marked candidate that resolves to a file never creates
+ *   subtree access.
  *
  * Each prompt candidate and the target are resolved independently against
- * projectRoot; approval requires canonical-path equality.
+ * projectRoot; exact-match approval requires canonical-path equality, and
+ * subtree approval requires the target to be a canonical descendant of the
+ * marked directory candidate.
  */
 export async function checkPromptApproval(
   promptText: string,
@@ -87,12 +95,20 @@ export async function checkPromptApproval(
 
   for (const candidate of extractCandidates(promptText)) {
     if (!candidate.raw) continue;
-    if (isDirectory && !candidate.marked) continue;
 
     const resolved = await resolvePath(candidate.raw, projectRoot, homeDir);
     if (resolved.denied) continue;
+
     if (resolved.path === target.path) {
+      if (isDirectory && !candidate.marked) continue;
       return { approved: true, isDirectory };
+    }
+
+    if (candidate.marked && isDescendantOf(resolved.path, target.path)) {
+      const candidateKind = await targetKind(resolved.path);
+      if (candidateKind === "directory") {
+        return { approved: true, isDirectory };
+      }
     }
   }
 
