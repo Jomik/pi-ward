@@ -36,22 +36,26 @@ function containsGlob(inputPath: string): boolean {
   return /[*?]|\[|\]/.test(inputPath);
 }
 
+/**
+ * Parse an optional leading `read|write` operation token from `rest`,
+ * preserving any internal whitespace (e.g. repeated spaces) in the
+ * remaining literal path.
+ */
+function parseOperationAndPath(rest: string): { operation: Operation; rawPath: string } {
+  const trimmed = rest.trim();
+  const match = trimmed.match(/^(read|write)(?:\s+([\s\S]*))?$/);
+  if (match) {
+    return { operation: match[1] as Operation, rawPath: match[2] ?? "" };
+  }
+  return { operation: "read", rawPath: trimmed };
+}
+
 // ---------------------------------------------------------------------------
 // Subcommand: allow
 // ---------------------------------------------------------------------------
 
 async function handleAllow(rest: string, deps: WardCommandDeps, ctx: CommandContext): Promise<void> {
-  const parts = rest.trim().split(/\s+/);
-
-  let operation: Operation = "read";
-  let rawPath: string;
-
-  if (parts[0] === "read" || parts[0] === "write") {
-    operation = parts[0] as Operation;
-    rawPath = parts.slice(1).join(" ");
-  } else {
-    rawPath = parts.join(" ");
-  }
+  const { operation, rawPath } = parseOperationAndPath(rest);
 
   if (!rawPath) {
     ctx.ui.notify("Usage: /ward allow [read|write] <path>", "warning");
@@ -96,9 +100,10 @@ async function handleAllow(rest: string, deps: WardCommandDeps, ctx: CommandCont
 // ---------------------------------------------------------------------------
 
 async function handleDeny(rest: string, deps: WardCommandDeps, ctx: CommandContext): Promise<void> {
-  const rawPath = rest.trim();
+  const { operation, rawPath } = parseOperationAndPath(rest);
+
   if (!rawPath) {
-    ctx.ui.notify("Usage: /ward deny <path>", "warning");
+    ctx.ui.notify("Usage: /ward deny [read|write] <path>", "warning");
     return;
   }
 
@@ -115,35 +120,14 @@ async function handleDeny(rest: string, deps: WardCommandDeps, ctx: CommandConte
     return;
   }
 
-  // Session denies only matter for baseline-denied operations. Check both read and write —
-  // only warn if neither operation would hit a baseline deny.
-  const readEval = evaluate(deps.rules, "read", resolved.path, deps.projectRoot);
-  const writeEval = evaluate(deps.rules, "write", resolved.path, deps.projectRoot);
-  const readBaselineDenied = readEval.effect === "deny" && readEval.source === "baseline";
-  const writeBaselineDenied = writeEval.effect === "deny" && writeEval.source === "baseline";
-
-  if (!readBaselineDenied && !writeBaselineDenied) {
-    let reason: string;
-    if (readEval.effect === "deny" || writeEval.effect === "deny") {
-      reason = "denied by explicit rule — session deny is redundant";
-    } else if (readEval.source === "rule" || writeEval.source === "rule") {
-      reason = "allowed by rule";
-    } else {
-      reason = "inside project root";
-    }
-    ctx.ui.notify(
-      `Warning: ${displayPath(resolved.path, deps.homeDir)} is ${reason} — session deny will have no effect`,
-      "warning",
-    );
-    return;
-  }
-
+  // Session denies are always stored — they're a hard temporary block that
+  // overrides rule allows, baseline allows, session grants, and call-scoped
+  // approvals (see checkPath). No rule/baseline evaluation is needed here.
   const dir = trailingSlash || (await isDirectory(resolved.path));
-  // Use operation "read" so the deny covers both read and write (deny+read → blocks all).
-  deps.grants.addDeny(resolved.path, "read", dir);
+  deps.grants.addDeny(resolved.path, operation, dir);
 
   const label = displayPath(resolved.path, deps.homeDir) + (dir ? "/" : "");
-  ctx.ui.notify(`Denied access to ${label}${dir ? " (directory)" : " (file)"}`, "info");
+  ctx.ui.notify(`Denied ${operation} access to ${label}${dir ? " (directory)" : " (file)"}`, "info");
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +143,7 @@ function handleList(deps: WardCommandDeps, ctx: CommandContext): void {
     return;
   }
 
-  const lines: string[] = ["Session grants:"];
+  const lines: string[] = ["Session decisions:"];
 
   for (const d of allows) {
     const label = displayPath(d.path, deps.homeDir) + (d.directory ? "/" : "");
@@ -234,13 +218,20 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
   const lines: string[] = [`Status for ${rawPath}`, `  resolved: ${resolved.path}`];
 
   for (const op of ["read", "write"] as Operation[]) {
-    const evalResult = evaluate(deps.rules, op, resolved.path, deps.projectRoot);
-
-    // Self-protection check for write operations.
+    // Self-protection check for write operations takes top precedence.
     if (op === "write" && isSelfProtected(resolved.path)) {
       lines.push(`  write: denied (ward config file — write-protected)`);
       continue;
     }
+
+    // A session deny is a hard temporary block that overrides rule allows
+    // and baseline allows — check it before evaluating rules/baseline.
+    if (deps.grants.isDenied(resolved.path, op)) {
+      lines.push(`  ${op}: denied by session deny`);
+      continue;
+    }
+
+    const evalResult = evaluate(deps.rules, op, resolved.path, deps.projectRoot);
 
     if (evalResult.effect === "allow" && evalResult.source === "rule") {
       lines.push(`  ${op}: allowed by rule: pattern "${evalResult.pattern}" (from ${evalResult.configDir})`);
@@ -250,15 +241,10 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
       lines.push(
         `  ${op}: denied by rule: pattern "${evalResult.pattern}" (from ${evalResult.configDir}) — not grantable`,
       );
+    } else if (deps.grants.isAllowed(resolved.path, op)) {
+      lines.push(`  ${op}: allowed by session grant`);
     } else {
-      // Baseline deny — check session grants/denies.
-      if (deps.grants.isAllowed(resolved.path, op)) {
-        lines.push(`  ${op}: allowed by session grant`);
-      } else if (deps.grants.isDenied(resolved.path, op)) {
-        lines.push(`  ${op}: denied by session deny`);
-      } else {
-        lines.push(`  ${op}: denied by baseline (outside project root) — grantable`);
-      }
+      lines.push(`  ${op}: denied by baseline (outside project root) — grantable`);
     }
   }
 
@@ -272,7 +258,7 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
 const USAGE =
   "Usage: /ward <allow|deny|list|revoke|status>\n" +
   "  allow [read|write] <path>  — grant session access\n" +
-  "  deny <path>                — preemptively deny session access\n" +
+  "  deny [read|write] <path>   — hard session block (overrides grants/rules); default read blocks read+write\n" +
   "  list                       — show active session grants/denies\n" +
   "  revoke <path>              — remove a grant/deny\n" +
   "  status <path>              — show what rules/grants apply to a path";

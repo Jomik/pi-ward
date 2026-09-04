@@ -205,6 +205,98 @@ describe("checkPath with grants", () => {
     }
   });
 
+  it("session deny overrides an explicit allow rule", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+    store.addDeny(resolvedFile, "read", false);
+
+    const rules: ParsedRule[] = [makeRule("notes.txt", "allow", outsideDir, "read")];
+    const result = await checkPath("read", file, "read", rules, projectRoot, store);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(false);
+      expect(result.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
+  it("session deny overrides baseline allow inside project root", async () => {
+    const file = join(projectRoot, "notes.txt");
+    await writeFile(file, "hello");
+
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+    store.addDeny(resolvedFile, "read", false);
+
+    const result = await checkPath("read", file, "read", [], projectRoot, store);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(false);
+      expect(result.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
+  it("session deny scoped to read blocks both read and write on a project-local file", async () => {
+    const file = join(projectRoot, "notes.txt");
+    await writeFile(file, "hello");
+
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+    store.addDeny(resolvedFile, "read", false);
+
+    const readResult = await checkPath("read", file, "read", [], projectRoot, store);
+    expect(readResult.allowed).toBe(false);
+    if (!readResult.allowed) {
+      expect(readResult.grantable).toBe(false);
+      expect(readResult.reason).toMatch(/denied by user \(session\)/);
+    }
+
+    const writeResult = await checkPath("write", file, "write", [], projectRoot, store);
+    expect(writeResult.allowed).toBe(false);
+    if (!writeResult.allowed) {
+      expect(writeResult.grantable).toBe(false);
+      expect(writeResult.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
+  it("session deny scoped to write blocks write but allows read on a project-local file", async () => {
+    const file = join(projectRoot, "notes.txt");
+    await writeFile(file, "hello");
+
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+    store.addDeny(resolvedFile, "write", false);
+
+    const readResult = await checkPath("read", file, "read", [], projectRoot, store);
+    expect(readResult.allowed).toBe(true);
+
+    const writeResult = await checkPath("write", file, "write", [], projectRoot, store);
+    expect(writeResult.allowed).toBe(false);
+    if (!writeResult.allowed) {
+      expect(writeResult.grantable).toBe(false);
+      expect(writeResult.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
+  it("session deny overrides a conflicting session allow for the same path", async () => {
+    const file = join(outsideDir, "conflict.txt");
+    await writeFile(file, "hello");
+
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+    store.addAllow(resolvedFile, "read", false);
+    store.addDeny(resolvedFile, "read", false);
+
+    const result = await checkPath("read", file, "read", [], projectRoot, store);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(false);
+      expect(result.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
   it("grant cannot override explicit deny rule", async () => {
     const file = join(projectRoot, ".env.local");
     await writeFile(file, "SECRET=foo");

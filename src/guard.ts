@@ -45,6 +45,17 @@ export async function checkPath(
     };
   }
 
+  // Session denies are hard temporary blocks: they override rule allows, baseline
+  // allows, session grants, and call-scoped approvals. Checked before rule evaluation,
+  // right after path resolution and self-protection.
+  if (grants?.isDenied(resolved.path, operation)) {
+    return {
+      allowed: false,
+      reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user (session)`,
+      grantable: false,
+    };
+  }
+
   const result = evaluate(rules, operation, resolved.path, projectRoot);
 
   if (result.effect === "allow") {
@@ -63,14 +74,6 @@ export async function checkPath(
   // Baseline deny — check session grants before declaring it grantable.
   if (grants?.isAllowed(resolved.path, operation)) {
     return { allowed: true };
-  }
-
-  if (grants?.isDenied(resolved.path, operation)) {
-    return {
-      allowed: false,
-      reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user (session)`,
-      grantable: false,
-    };
   }
 
   // Call-scoped recursive approval (e.g. a grep run against a prompt-approved

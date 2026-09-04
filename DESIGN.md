@@ -248,18 +248,19 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 
 1. Path resolution (symlink resolve, broken symlink check).
 2. Self-protection check (ward config files are always write-protected).
-3. Rule evaluation (first-match-wins): an allow rule match short-circuits to allow; a deny rule match hard-blocks, no prompt.
-4. If baseline would deny (path outside project root):
+3. Check session denies → if match, deny silently. This is a hard block: it overrides rule allows, baseline allows, session grants, and call-scoped approvals, and is checked before rule evaluation.
+4. Rule evaluation (first-match-wins): an allow rule match short-circuits to allow; a deny rule match hard-blocks, no prompt.
+5. If baseline would deny (path outside project root):
    a. Check session grants → if match, allow silently.
-   b. Check session denies → if match, deny silently.
-   c. For reads only, check prompt-derived approval (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants) below) → if match, allow silently, scoped to the current turn.
-   d. Prompt user → apply their choice.
-5. If baseline would allow (inside project root) → allow.
+   b. For reads only, check prompt-derived approval (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants) below) → if match, allow silently, scoped to the current turn.
+   c. Prompt user → apply their choice.
+6. If baseline would allow (inside project root) → allow.
 
 **Key constraints:**
 
 - Grants are in-memory only — they do not persist across sessions.
 - Grants cannot override explicit deny rules — only baseline denies are grantable.
+- Session denies are the exception: they are always stored (even inside project root, even where a rule or grant would otherwise allow), and always checked first — they override rule allows, baseline allows, session grants, and call-scoped approvals.
 - Directory grants (`directory: true`) cover the path and everything under it.
 - Operation semantics mirror rules: a write grant covers read+write; a read deny blocks both.
 - When no UI is available (non-interactive mode), baseline denies remain blocked, except where prompt-derived read approval applies (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants) below) — that check needs no UI, only a real user turn.
@@ -319,7 +320,8 @@ The interactive approval flow prompts per-file. The `/ward` slash command lets t
 ```
 /ward allow read ~/projects/work/     # grant read to directory + contents
 /ward allow write ~/projects/work/    # grant read+write
-/ward deny ~/projects/work/           # preemptive session deny
+/ward deny ~/projects/work/           # preemptive session deny (default read: blocks read+write)
+/ward deny write ~/projects/work/     # preemptive session deny, write only (read still permitted)
 /ward list                            # show active session grants/denies
 /ward revoke ~/projects/work/         # remove a grant (reverts to baseline)
 /ward status ~/some/path              # show what rules/grants apply to a path
@@ -327,31 +329,32 @@ The interactive approval flow prompts per-file. The `/ward` slash command lets t
 
 **Semantics:**
 
-- Same constraints as interactive grants: cannot override explicit deny rules. Only baseline denies are grantable.
+- Allows: cannot override explicit deny rules. Only baseline denies are grantable.
+- Denies: always stored, regardless of what a rule or baseline would otherwise decide — including paths inside the project root and paths an explicit rule would allow. A session deny is a hard temporary block for the remainder of the process: it overrides rule allows, baseline allows, session grants, and call-scoped approvals.
 - Directory patterns: trailing `/` covers the path and everything underneath.
-- Operation semantics: `write` implies read+write. `read` is read-only. Omitting the operation defaults to `read`.
+- Operation semantics: `write` implies read+write for allow; for deny, `read` (default) blocks read+write, `write` blocks writes only. Omitting the operation defaults to `read`.
 - Scope is always session — no persistence.
 - Path resolution: `~/` expanded at grant time. Symlinks resolved. Relative paths resolved from project root.
 - Literal paths and directory patterns only — no globs, no wildcards.
 
-**Evaluation order (unchanged):**
+**Evaluation order:**
 
-Fits into the existing step 4 — session grants checked before prompting:
+`/ward` grants and denies plug into the same evaluation order described in [Runtime Grants](#runtime-grants-interactive-approval) above — session denies are checked immediately after self-protection, before rule evaluation:
 
 1. Path resolution
 2. Self-protection check
-3. Rule evaluation (first-match-wins): an allow rule match short-circuits to allow; a deny rule match hard-blocks, no override
-4. Baseline deny?
+3. Check session denies → `/ward deny` lives here; hard block, checked first
+4. Rule evaluation (first-match-wins): an allow rule match short-circuits to allow; a deny rule match hard-blocks, no override
+5. Baseline deny?
    - a. Check session grants → `/ward` grants live here
-   - b. Check session denies → `/ward deny` lives here
-   - c. For reads only, check prompt-derived approval (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants)) → turn-scoped, not stored
-   - d. Prompt user (if no grant/deny/approval matches)
-5. Baseline allow → allow
+   - b. For reads only, check prompt-derived approval (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants)) → turn-scoped, not stored
+   - c. Prompt user (if no grant/deny/approval matches)
+6. Baseline allow → allow
 
 **`/ward list` output:**
 
 ```
-Session grants:
+Session decisions:
   allow read   ~/projects/work/          (directory)
   deny  read   ~/secrets/                 (directory)
   allow read   ~/notes/reference.md      (file)
@@ -363,7 +366,7 @@ Removes the grant/deny from session state. Future access falls back to baseline 
 
 **`/ward status <path>`:**
 
-Reports the evaluation result for a path: which rule or grant applies, what the outcome would be, and why. Useful for debugging "why was this blocked?"
+Reports the evaluation result for a path: which rule or grant applies, what the outcome would be, and why — reflecting the same hard session-deny precedence as the evaluation order above (a session deny always wins, even over an allow rule or grant). Useful for debugging "why was this blocked?"
 
 ## Non-Goals
 

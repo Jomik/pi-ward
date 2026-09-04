@@ -17,8 +17,9 @@ export interface Decision {
  * Session grants override baseline denies (paths outside project root that have
  * no explicit deny rule). They cannot override explicit deny rules.
  *
- * Session denies suppress future prompts for the same path — the user won't
- * be asked again for the remainder of the process.
+ * Session denies are hard temporary blocks: they override session grants, rule
+ * allows, baseline allows, and call-scoped approvals for the remainder of the
+ * process.
  */
 export class GrantStore {
   private allows: Decision[] = [];

@@ -17,6 +17,46 @@ import { createMoveTool } from "./tools/move.js";
 /** Mirrors AutocompleteItem from @earendil-works/pi-tui (not a direct project dependency). */
 type AutocompleteItem = { value: string; label: string; description?: string };
 
+/** Argument completions for the `/ward` command. */
+export function getArgumentCompletions(prefix: string): AutocompleteItem[] | null {
+  const spaceIdx = prefix.indexOf(" ");
+
+  if (spaceIdx === -1) {
+    // User is still typing the subcommand.
+    const subcommands: AutocompleteItem[] = [
+      { value: "allow", label: "allow", description: "Grant session access to a path" },
+      { value: "deny", label: "deny", description: "Preemptively deny session access to a path" },
+      { value: "list", label: "list", description: "Show active session grants and denies" },
+      { value: "revoke", label: "revoke", description: "Remove a session grant or deny for a path" },
+      { value: "status", label: "status", description: "Show what rules and grants apply to a path" },
+    ];
+    const filtered = subcommands.filter((item) => item.value.startsWith(prefix));
+    return filtered.length > 0 ? filtered : null;
+  }
+
+  if (prefix.startsWith("allow ")) {
+    const afterAllow = prefix.slice("allow ".length);
+    const operations: AutocompleteItem[] = [
+      { value: "allow read", label: "read", description: "Grant read access to a path" },
+      { value: "allow write", label: "write", description: "Grant read and write access to a path" },
+    ];
+    const filtered = operations.filter((item) => item.label.startsWith(afterAllow));
+    return filtered.length > 0 ? filtered : null;
+  }
+
+  if (prefix.startsWith("deny ")) {
+    const afterDeny = prefix.slice("deny ".length);
+    const operations: AutocompleteItem[] = [
+      { value: "deny read", label: "read", description: "Deny read (and write) access to a path" },
+      { value: "deny write", label: "write", description: "Deny write access to a path" },
+    ];
+    const filtered = operations.filter((item) => item.label.startsWith(afterDeny));
+    return filtered.length > 0 ? filtered : null;
+  }
+
+  return null;
+}
+
 /**
  * Extract the guard operation and path list from a tool call event.
  *
@@ -265,34 +305,7 @@ const factory: ExtensionFactory = async (pi) => {
 
   pi.registerCommand("ward", {
     description: "Manage session access grants",
-    getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
-      const spaceIdx = prefix.indexOf(" ");
-
-      if (spaceIdx === -1) {
-        // User is still typing the subcommand.
-        const subcommands: AutocompleteItem[] = [
-          { value: "allow", label: "allow", description: "Grant session access to a path" },
-          { value: "deny", label: "deny", description: "Preemptively deny session access to a path" },
-          { value: "list", label: "list", description: "Show active session grants and denies" },
-          { value: "revoke", label: "revoke", description: "Remove a session grant or deny for a path" },
-          { value: "status", label: "status", description: "Show what rules and grants apply to a path" },
-        ];
-        const filtered = subcommands.filter((item) => item.value.startsWith(prefix));
-        return filtered.length > 0 ? filtered : null;
-      }
-
-      if (prefix.startsWith("allow ")) {
-        const afterAllow = prefix.slice("allow ".length);
-        const operations: AutocompleteItem[] = [
-          { value: "allow read", label: "read", description: "Grant read access to a path" },
-          { value: "allow write", label: "write", description: "Grant read and write access to a path" },
-        ];
-        const filtered = operations.filter((item) => item.label.startsWith(afterAllow));
-        return filtered.length > 0 ? filtered : null;
-      }
-
-      return null;
-    },
+    getArgumentCompletions,
     handler: async (args, ctx) => {
       await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants });
     },

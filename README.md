@@ -93,6 +93,22 @@ Global rules may include a `projectRoot` field (string or string array) to restr
 
 This allows `backend` to read `~/projects/shared-lib/` while any other project is denied by baseline. Pass an array to apply the same rule to multiple projects. Project configs may not use `projectRoot` — it is a load-time error. See [DESIGN.md](./DESIGN.md) for path resolution semantics and further examples.
 
+## `/ward` Session Controls
+
+The `/ward` slash command manages in-memory, session-scoped access decisions on top of the config rules above:
+
+```
+/ward allow read <path>    # grant read for this session
+/ward allow write <path>   # grant read+write for this session
+/ward deny <path>          # hard session block, default read (blocks read+write)
+/ward deny write <path>    # hard session block, write only (read still permitted)
+/ward list                 # show active session decisions
+/ward revoke <path>        # remove a session decision, reverting to baseline/rules
+/ward status <path>        # show what rule/grant/deny applies to a path and why
+```
+
+Operations default to `read` (restrictive) — same asymmetric semantics as config rules: `allow write` grants read+write, `deny` (read) blocks both, `deny write` blocks writes only. A `/ward deny` is a hard, temporary block for the rest of the session: it applies even inside the project root and overrides allows (rule allows, baseline allows, and other session grants). See [DESIGN.md](./DESIGN.md#ward-command-proactive-session-grants) for evaluation order and precedence details.
+
 ## Design
 
 See [DESIGN.md](./DESIGN.md) for the full specification.
