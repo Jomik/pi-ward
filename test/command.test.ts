@@ -210,7 +210,7 @@ describe("/ward allow", () => {
 // ---------------------------------------------------------------------------
 
 describe("/ward deny", () => {
-  it("adds a deny for a file", async () => {
+  it("adds a deny for a file (default operation blocks read+write)", async () => {
     const file = join(outsideDir, "secrets.txt");
     await writeFile(file, "data");
     const store = new GrantStore();
@@ -220,6 +220,30 @@ describe("/ward deny", () => {
     expect(notes[0]?.type).toBe("info");
     expect(store.isDenied(resolvedFile, "read")).toBe(true);
     expect(store.isDenied(resolvedFile, "write")).toBe(true);
+  });
+
+  it("denies read when 'read' is explicit (blocks read+write)", async () => {
+    const file = join(outsideDir, "secrets.txt");
+    await writeFile(file, "data");
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+
+    const notes = await run(`deny read ${file}`, store);
+    expect(notes[0]?.type).toBe("info");
+    expect(store.isDenied(resolvedFile, "read")).toBe(true);
+    expect(store.isDenied(resolvedFile, "write")).toBe(true);
+  });
+
+  it("denies write only when 'write' is specified (read still permitted)", async () => {
+    const file = join(outsideDir, "secrets.txt");
+    await writeFile(file, "data");
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+
+    const notes = await run(`deny write ${file}`, store);
+    expect(notes[0]?.type).toBe("info");
+    expect(store.isDenied(resolvedFile, "write")).toBe(true);
+    expect(store.isDenied(resolvedFile, "read")).toBe(false);
   });
 
   it("adds a directory deny with trailing slash", async () => {
@@ -269,39 +293,42 @@ describe("/ward deny", () => {
     expect(store.listDenies()).toHaveLength(0);
   });
 
-  it("warns when denying a path inside project root (no-op)", async () => {
+  it("stores a valid session deny for a path inside project root", async () => {
     const store = new GrantStore();
     const file = join(projectRoot, "src", "index.ts");
     await mkdir(join(projectRoot, "src"), { recursive: true });
     await writeFile(file, "");
+    const resolvedFile = await realpath(file);
     const notes = await run(`deny ${file}`, store);
-    expect(notes[0]?.type).toBe("warning");
-    expect(notes[0]?.message).toMatch(/inside project root/);
-    expect(notes[0]?.message).toMatch(/no effect/);
-    expect(store.listDenies()).toHaveLength(0);
+    expect(notes[0]?.type).toBe("info");
+    expect(store.isDenied(resolvedFile, "read")).toBe(true);
+    expect(store.isDenied(resolvedFile, "write")).toBe(true);
   });
 
-  it("warns when denying a path already denied by explicit rule", async () => {
+  it("stores a valid session deny for a path already denied by explicit rule", async () => {
     const store = new GrantStore();
     const file = join(outsideDir, ".env");
     await writeFile(file, "");
+    const resolvedFile = await realpath(file);
     const rules = [makeRule(".env", "deny", projectRoot)];
     const notes = await run(`deny ${file}`, store, rules);
-    expect(notes[0]?.type).toBe("warning");
-    expect(notes[0]?.message).toMatch(/denied by explicit rule/);
-    expect(store.listDenies()).toHaveLength(0);
+    expect(notes[0]?.type).toBe("info");
+    expect(store.isDenied(resolvedFile, "read")).toBe(true);
+    expect(store.listDenies()).toHaveLength(1);
   });
 
-  it("allows deny when path has baseline deny for write but rule-allow for read", async () => {
-    // A path outside project root with an allow-read rule → read is rule-allowed,
-    // but write is baseline-denied. Session deny should proceed.
+  it("stores a valid session deny for a path allowed by an explicit rule", async () => {
+    // A path outside project root with an allow-read rule → read is rule-allowed.
+    // Session deny must still be stored and take precedence at checkPath time.
     const store = new GrantStore();
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "");
+    const resolvedFile = await realpath(file);
     const rules = [makeRule("notes.txt", "allow", outsideDir, "read")];
     const notes = await run(`deny ${file}`, store, rules);
     expect(notes[0]?.type).toBe("info");
-    expect(notes[0]?.message).toMatch(/Denied access/);
+    expect(notes[0]?.message).toMatch(/Denied .*access/);
+    expect(store.isDenied(resolvedFile, "read")).toBe(true);
     expect(store.listDenies()).toHaveLength(1);
   });
 });

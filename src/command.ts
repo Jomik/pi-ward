@@ -96,9 +96,20 @@ async function handleAllow(rest: string, deps: WardCommandDeps, ctx: CommandCont
 // ---------------------------------------------------------------------------
 
 async function handleDeny(rest: string, deps: WardCommandDeps, ctx: CommandContext): Promise<void> {
-  const rawPath = rest.trim();
+  const parts = rest.trim().split(/\s+/);
+
+  let operation: Operation = "read";
+  let rawPath: string;
+
+  if (parts[0] === "read" || parts[0] === "write") {
+    operation = parts[0] as Operation;
+    rawPath = parts.slice(1).join(" ");
+  } else {
+    rawPath = parts.join(" ");
+  }
+
   if (!rawPath) {
-    ctx.ui.notify("Usage: /ward deny <path>", "warning");
+    ctx.ui.notify("Usage: /ward deny [read|write] <path>", "warning");
     return;
   }
 
@@ -115,35 +126,14 @@ async function handleDeny(rest: string, deps: WardCommandDeps, ctx: CommandConte
     return;
   }
 
-  // Session denies only matter for baseline-denied operations. Check both read and write —
-  // only warn if neither operation would hit a baseline deny.
-  const readEval = evaluate(deps.rules, "read", resolved.path, deps.projectRoot);
-  const writeEval = evaluate(deps.rules, "write", resolved.path, deps.projectRoot);
-  const readBaselineDenied = readEval.effect === "deny" && readEval.source === "baseline";
-  const writeBaselineDenied = writeEval.effect === "deny" && writeEval.source === "baseline";
-
-  if (!readBaselineDenied && !writeBaselineDenied) {
-    let reason: string;
-    if (readEval.effect === "deny" || writeEval.effect === "deny") {
-      reason = "denied by explicit rule — session deny is redundant";
-    } else if (readEval.source === "rule" || writeEval.source === "rule") {
-      reason = "allowed by rule";
-    } else {
-      reason = "inside project root";
-    }
-    ctx.ui.notify(
-      `Warning: ${displayPath(resolved.path, deps.homeDir)} is ${reason} — session deny will have no effect`,
-      "warning",
-    );
-    return;
-  }
-
+  // Session denies are always stored — they're a hard temporary block that
+  // overrides rule allows, baseline allows, session grants, and call-scoped
+  // approvals (see checkPath). No rule/baseline evaluation is needed here.
   const dir = trailingSlash || (await isDirectory(resolved.path));
-  // Use operation "read" so the deny covers both read and write (deny+read → blocks all).
-  deps.grants.addDeny(resolved.path, "read", dir);
+  deps.grants.addDeny(resolved.path, operation, dir);
 
   const label = displayPath(resolved.path, deps.homeDir) + (dir ? "/" : "");
-  ctx.ui.notify(`Denied access to ${label}${dir ? " (directory)" : " (file)"}`, "info");
+  ctx.ui.notify(`Denied ${operation} access to ${label}${dir ? " (directory)" : " (file)"}`, "info");
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +262,7 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
 const USAGE =
   "Usage: /ward <allow|deny|list|revoke|status>\n" +
   "  allow [read|write] <path>  — grant session access\n" +
-  "  deny <path>                — preemptively deny session access\n" +
+  "  deny [read|write] <path>   — hard session block (overrides grants/rules); default read blocks read+write\n" +
   "  list                       — show active session grants/denies\n" +
   "  revoke <path>              — remove a grant/deny\n" +
   "  status <path>              — show what rules/grants apply to a path";
