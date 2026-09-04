@@ -337,9 +337,9 @@ The interactive approval flow prompts per-file. The `/ward` slash command lets t
 - Path resolution: `~/` expanded at grant time. Symlinks resolved. Relative paths resolved from project root.
 - Literal paths and directory patterns only — no globs, no wildcards.
 
-**Evaluation order (unchanged):**
+**Evaluation order:**
 
-Session denies are checked immediately after self-protection, before rule evaluation:
+`/ward` grants and denies plug into the same evaluation order described in [Runtime Grants](#runtime-grants-interactive-approval) above — session denies are checked immediately after self-protection, before rule evaluation:
 
 1. Path resolution
 2. Self-protection check
@@ -354,7 +354,7 @@ Session denies are checked immediately after self-protection, before rule evalua
 **`/ward list` output:**
 
 ```
-Session grants:
+Session decisions:
   allow read   ~/projects/work/          (directory)
   deny  read   ~/secrets/                 (directory)
   allow read   ~/notes/reference.md      (file)
@@ -366,7 +366,7 @@ Removes the grant/deny from session state. Future access falls back to baseline 
 
 **`/ward status <path>`:**
 
-Reports the evaluation result for a path: which rule or grant applies, what the outcome would be, and why. Useful for debugging "why was this blocked?"
+Reports the evaluation result for a path: which rule or grant applies, what the outcome would be, and why — reflecting the same hard session-deny precedence as the evaluation order above (a session deny always wins, even over an allow rule or grant). Useful for debugging "why was this blocked?"
 
 ## Non-Goals
 
