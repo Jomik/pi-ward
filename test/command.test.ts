@@ -1,12 +1,19 @@
-import { link, mkdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { wardCommandHandler } from "../src/command.js";
 import { GrantStore } from "../src/grants.js";
 import { parsePattern } from "../src/pattern.js";
 import type { ParsedRule } from "../src/rules.js";
 import type { ProtectedIdentity } from "../src/self-protect.js";
+
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+  getAgentDir: vi.fn(),
+}));
+
+const mockGetAgentDir = vi.mocked(getAgentDir);
 
 // ---------------------------------------------------------------------------
 // Test infrastructure
@@ -25,6 +32,7 @@ beforeEach(async () => {
   projectRoot = join(tempDir, "project");
   homeDir = join(tempDir, "home");
   outsideDir = join(homeDir, "outside");
+  mockGetAgentDir.mockReturnValue(join(homeDir, ".pi", "agent"));
 });
 
 afterEach(async () => {
@@ -633,6 +641,333 @@ describe("/ward status", () => {
     const notes = await run(`status ${broken}`, store);
     expect(notes[0]?.type).toBe("warning");
     expect(notes[0]?.message).toMatch(/Cannot resolve path/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /ward project
+// ---------------------------------------------------------------------------
+
+function globalConfigFile(): string {
+  return join(homeDir, ".pi", "agent", "ward.json");
+}
+
+async function writeGlobalConfig(content: unknown): Promise<void> {
+  await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
+  await writeFile(globalConfigFile(), JSON.stringify(content), "utf-8");
+}
+
+interface ProjectRunOpts {
+  hasUI?: boolean;
+  confirmResult?: boolean;
+  rules?: ParsedRule[];
+  protectedIdentities?: ProtectedIdentity[];
+  reloadPolicy?: () => Promise<{ ok: true } | { ok: false; reason: string }>;
+}
+
+function makeProjectCtx(opts: ProjectRunOpts) {
+  const notifications: Notification[] = [];
+  const confirmCalls: Array<{ title: string; message: string }> = [];
+  return {
+    notifications,
+    confirmCalls,
+    hasUI: opts.hasUI ?? true,
+    ui: {
+      notify(message: string, type?: "info" | "warning" | "error") {
+        notifications.push({ message, type });
+      },
+      confirm: async (title: string, message: string) => {
+        confirmCalls.push({ title, message });
+        return opts.confirmResult ?? true;
+      },
+    },
+  };
+}
+
+async function runProject(args: string, opts: ProjectRunOpts = {}) {
+  const ctx = makeProjectCtx(opts);
+  const grants = new GrantStore();
+  await wardCommandHandler(args, ctx, {
+    rules: opts.rules ?? [],
+    projectRoot,
+    homeDir,
+    grants,
+    protectedIdentities: opts.protectedIdentities ?? [],
+    reloadPolicy: opts.reloadPolicy,
+  });
+  return ctx;
+}
+
+describe("/ward project allow|deny", () => {
+  it("persists an allow rule after confirmation and reports success", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+    const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
+
+    const ctx = await runProject(`project allow ${file}`, { confirmResult: true, reloadPolicy });
+
+    expect(ctx.notifications.at(-1)?.type).toBe("info");
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted allow read rule/);
+    expect(ctx.notifications.at(-1)?.message).toMatch(/reloaded/i);
+    expect(reloadPolicy).toHaveBeenCalledOnce();
+
+    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
+    expect(written.rules).toHaveLength(1);
+    expect(written.rules[0]).toMatchObject({ effect: "allow", operations: "read" });
+  });
+
+  it("persists a write rule when 'write' operation is specified", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+
+    await runProject(`project allow write ${file}`, { confirmResult: true });
+
+    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
+    expect(written.rules[0]).toMatchObject({ effect: "allow", operations: "write" });
+  });
+
+  it("persists a deny rule after confirmation", async () => {
+    const file = join(outsideDir, "secret.txt");
+    await writeFile(file, "data");
+
+    const ctx = await runProject(`project deny ${file}`, { confirmResult: true });
+
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted deny read rule/);
+    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
+    expect(written.rules[0]).toMatchObject({ effect: "deny", operations: "read" });
+  });
+
+  it("shows an exact preview and writes nothing when the user cancels", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+
+    const ctx = await runProject(`project allow ${file}`, { confirmResult: false });
+
+    expect(ctx.confirmCalls).toHaveLength(1);
+    const msg = ctx.confirmCalls[0]?.message ?? "";
+    expect(msg).toMatch(/effect: allow/);
+    expect(msg).toMatch(/operation: read/);
+    expect(msg).toMatch(/pattern: /);
+    expect(msg).toMatch(/projectRoot condition: /);
+    expect(msg).toMatch(/destination: /);
+    expect(ctx.notifications.at(-1)?.type).toBe("info");
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Cancelled/);
+    await expect(readFile(globalConfigFile(), "utf-8")).rejects.toThrow();
+  });
+
+  it("refuses to persist without an interactive UI, but list still works", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+
+    const ctx = await runProject(`project allow ${file}`, { hasUI: false });
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/interactive session/);
+    await expect(readFile(globalConfigFile(), "utf-8")).rejects.toThrow();
+
+    const listCtx = await runProject("project list", { hasUI: false });
+    expect(listCtx.notifications[0]?.type).toBe("info");
+  });
+
+  it("shows usage when no path is given", async () => {
+    const ctx = await runProject("project allow");
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/Usage: \/ward project allow/);
+  });
+
+  it("rejects glob characters in path", async () => {
+    const ctx = await runProject("project allow ~/foo/*.ts");
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/Glob patterns are not supported/);
+  });
+
+  it("rejects unresolvable paths (broken symlink)", async () => {
+    const broken = join(outsideDir, "broken-project-link");
+    await symlink(join(outsideDir, "nonexistent-target"), broken);
+
+    const ctx = await runProject(`project allow ${broken}`);
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/Cannot resolve path/);
+  });
+
+  it("rejects a write rule targeting a self-protected config path", async () => {
+    const protectedDir = join(outsideDir, ".pi");
+    await mkdir(protectedDir, { recursive: true });
+    const protectedFile = join(protectedDir, "ward.json");
+    await writeFile(protectedFile, "{}");
+
+    const ctx = await runProject(`project allow write ${protectedFile}`);
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/write-protected/);
+  });
+
+  it("rejects when the candidate would be shadowed by an existing global rule", async () => {
+    await writeGlobalConfig({ rules: [{ pattern: "~/outside/", effect: "allow" }] });
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+
+    const ctx = await runProject(`project allow ${file}`);
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/shadowed by an earlier global rule/);
+  });
+
+  it("rejects persisting an allow when an explicit deny rule already governs the path", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    const projectDenyRule = makeRule("notes.txt", "deny", projectRoot);
+
+    const ctx = await runProject(`project allow ${file}`, { rules: [projectDenyRule] });
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/explicit deny rule/);
+  });
+
+  it("discloses (without blocking) a project rule that a persisted deny would supersede", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    const projectRule = makeRule("notes.txt", "deny", projectRoot);
+
+    const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
+    const ctx = await runProject(`project deny ${file}`, { confirmResult: true, rules: [projectRule], reloadPolicy });
+
+    expect(ctx.confirmCalls[0]?.message).toMatch(/supersede/);
+    expect(ctx.notifications.at(-1)?.type).toBe("info");
+  });
+
+  it("reports a persistence success with a reload-failure fallback message", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+    const reloadPolicy = vi.fn(async () => ({ ok: false as const, reason: "boom" }));
+
+    const ctx = await runProject(`project allow ${file}`, { confirmResult: true, reloadPolicy });
+
+    expect(ctx.notifications.at(-1)?.type).toBe("warning");
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted allow read rule/);
+    expect(ctx.notifications.at(-1)?.message).toMatch(/boom/);
+    expect(ctx.notifications.at(-1)?.message).toMatch(/restart to apply/);
+
+    // The disk write itself succeeded despite the reload failure.
+    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
+    expect(written.rules).toHaveLength(1);
+  });
+});
+
+describe("/ward project list", () => {
+  it("reports no persisted rules when the global config is empty", async () => {
+    const ctx = await runProject("project list");
+    expect(ctx.notifications[0]?.type).toBe("info");
+    expect(ctx.notifications[0]?.message).toMatch(/No persisted rules/);
+  });
+
+  it("lists only rules scoped to the active project, filtering out other projects' rules", async () => {
+    const otherProject = join(tempDir, "other-project");
+    await mkdir(otherProject, { recursive: true });
+
+    await writeGlobalConfig({
+      rules: [
+        { pattern: "~/outside/mine.txt", effect: "allow", operations: "read", projectRoot },
+        { pattern: "~/outside/theirs.txt", effect: "deny", operations: "read", projectRoot: otherProject },
+      ],
+    });
+
+    const ctx = await runProject("project list");
+    const msg = ctx.notifications[0]?.message ?? "";
+    expect(msg).toMatch(/mine\.txt/);
+    expect(msg).not.toMatch(/theirs\.txt/);
+  });
+
+  it("does not mutate anything and never asks for confirmation", async () => {
+    await writeGlobalConfig({ rules: [{ pattern: "~/outside/mine.txt", effect: "allow", projectRoot }] });
+    const before = await readFile(globalConfigFile(), "utf-8");
+
+    const ctx = await runProject("project list", { confirmResult: false });
+
+    expect(ctx.confirmCalls).toHaveLength(0);
+    const after = await readFile(globalConfigFile(), "utf-8");
+    expect(after).toBe(before);
+  });
+});
+
+describe("/ward project unknown subcommand", () => {
+  it("shows project usage for an unrecognised subcommand", async () => {
+    const ctx = await runProject("project bogus");
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/Usage: \/ward project/);
+  });
+});
+
+describe("/ward project path parsing (whitespace preservation)", () => {
+  it("persists a path with repeated internal spaces exactly", async () => {
+    const dirWithSpaces = join(outsideDir, "my  dir");
+    await mkdir(dirWithSpaces, { recursive: true });
+    const file = join(dirWithSpaces, "a  b.txt");
+    await writeFile(file, "hello");
+
+    const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
+    const ctx = await runProject(`project allow ${file}`, { confirmResult: true, reloadPolicy });
+
+    expect(ctx.notifications.at(-1)?.type).toBe("info");
+    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
+    expect(written.rules).toHaveLength(1);
+    expect(written.rules[0].pattern).toMatch(/my {2}dir\/a {2}b\.txt$/);
+  });
+});
+
+describe("/ward project malformed global config handling", () => {
+  it("surfaces a warning (without throwing) for mutation when the global config is invalid JSON", async () => {
+    await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
+    await writeFile(globalConfigFile(), "{ not valid json", "utf-8");
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+
+    const ctx = await runProject(`project allow ${file}`);
+
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/Invalid JSON/);
+  });
+
+  it("surfaces a warning (without throwing) for mutation when the global config fails schema validation", async () => {
+    await writeGlobalConfig({ rules: [{ pattern: 123, effect: "allow" }] });
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+
+    const ctx = await runProject(`project allow ${file}`);
+
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/schema validation failed|instancePath|must be/i);
+  });
+
+  it("surfaces a warning (without throwing) for list when the global config is invalid JSON", async () => {
+    await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
+    await writeFile(globalConfigFile(), "{ not valid json", "utf-8");
+
+    const ctx = await runProject("project list");
+
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/Invalid JSON/);
+  });
+});
+
+describe("/ward project confirm failure", () => {
+  it("reports a warning and writes nothing when confirm throws", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+
+    const ctx = makeProjectCtx({});
+    ctx.ui.confirm = vi.fn(async () => {
+      throw new Error("confirm boom");
+    });
+    const grants = new GrantStore();
+
+    await wardCommandHandler(`project allow ${file}`, ctx, {
+      rules: [],
+      projectRoot,
+      homeDir,
+      grants,
+      protectedIdentities: [],
+    });
+
+    expect(ctx.notifications.at(-1)?.type).toBe("warning");
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Confirmation failed/);
+    await expect(readFile(globalConfigFile(), "utf-8")).rejects.toThrow();
   });
 });
 

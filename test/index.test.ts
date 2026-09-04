@@ -2,11 +2,33 @@ import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GrantStore } from "../src/grants.js";
-import { extractAccess, getArgumentCompletions, handleGrepResult, handleToolCall, promptAccess } from "../src/index.js";
+import factory, {
+  extractAccess,
+  getArgumentCompletions,
+  handleGrepResult,
+  handleToolCall,
+  promptAccess,
+  reloadWardPolicy,
+} from "../src/index.js";
 import { parsePattern } from "../src/pattern.js";
 import type { ParsedRule } from "../src/rules.js";
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
+  return { ...actual, getAgentDir: vi.fn() };
+});
+
+const mockGetAgentDir = vi.mocked(getAgentDir);
+
+beforeEach(() => {
+  // Default stub so unrelated tests (self-protection checks inside
+  // handleToolCall etc.) don't crash on an unconfigured getAgentDir().
+  // Tests exercising reloadWardPolicy override this with a real temp path.
+  mockGetAgentDir.mockReturnValue("/pi-ward-test-unused-agent-dir");
+});
 
 const projectRoot = "/project";
 
@@ -692,5 +714,141 @@ describe("handleGrepResult", () => {
     expect(result).toBeDefined();
     const text = (result?.content[0] as { text: string }).text;
     expect(text).not.toContain("hello");
+  });
+});
+
+describe("reloadWardPolicy", () => {
+  let tempDir: string;
+  let testHome: string;
+  let testProjectRoot: string;
+  let globalConfigPath: string;
+
+  beforeEach(async () => {
+    const base = join(tmpdir(), `pi-ward-reload-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(join(base, "home", ".pi", "agent"), { recursive: true });
+    await mkdir(join(base, "project", ".pi"), { recursive: true });
+    tempDir = await realpath(base);
+    testHome = join(tempDir, "home");
+    testProjectRoot = join(tempDir, "project");
+    globalConfigPath = join(testHome, ".pi", "agent", "ward.json");
+    mockGetAgentDir.mockReturnValue(join(testHome, ".pi", "agent"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("loads fresh rules and identities on success", async () => {
+    await writeFile(globalConfigPath, JSON.stringify({ rules: [{ pattern: "~/notes.txt", effect: "deny" }] }));
+
+    const result = await reloadWardPolicy(testProjectRoot, testHome, []);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rules).toHaveLength(1);
+      expect(result.protectedIdentities).toHaveLength(1);
+    }
+  });
+
+  it("on failure, retains prior identities and folds in the replacement global config's identity", async () => {
+    // Malformed JSON forces loadConfig to throw, simulating a reload failure
+    // (e.g. a concurrent writer left invalid content) after the disk write
+    // for the persisted rule itself already succeeded.
+    await writeFile(globalConfigPath, "{ not valid json");
+    const priorIdentity = { dev: 1, ino: 1 };
+
+    const result = await reloadWardPolicy(testProjectRoot, testHome, [priorIdentity]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(/Invalid JSON/);
+      expect(result.protectedIdentities).toContainEqual(priorIdentity);
+      expect(result.protectedIdentities).toHaveLength(2);
+    }
+  });
+
+  it("on failure, leaves protectedIdentities unchanged when the replacement config can't be stat'd either", async () => {
+    // No global config file exists at all — identityFor(globalConfigPath()) will
+    // also fail (ENOENT), so the prior identities list must be preserved as-is.
+    await rm(join(testHome, ".pi", "agent"), { recursive: true, force: true });
+    await mkdir(join(testProjectRoot, ".pi"), { recursive: true });
+    await writeFile(join(testProjectRoot, ".pi", "ward.json"), "{ not valid json");
+    const priorIdentity = { dev: 2, ino: 2 };
+
+    const result = await reloadWardPolicy(testProjectRoot, testHome, [priorIdentity]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.protectedIdentities).toEqual([priorIdentity]);
+    }
+  });
+});
+
+describe("ward command autocomplete", () => {
+  type CommandConfig = {
+    description: string;
+    getArgumentCompletions: (prefix: string) => Array<{ value: string; label: string; description?: string }> | null;
+    handler: (args: string, ctx: unknown) => Promise<void>;
+  };
+
+  /** Install the extension with a minimal mock `pi` and capture its `/ward` command config. */
+  async function registerWardCommand(): Promise<CommandConfig> {
+    const base = join(tmpdir(), `pi-ward-autocomplete-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(base, { recursive: true });
+    const cwd = await realpath(base);
+    mockGetAgentDir.mockReturnValue(join(cwd, ".pi", "agent"));
+
+    const originalCwd = process.cwd();
+    process.chdir(cwd);
+    try {
+      let wardConfig: CommandConfig | undefined;
+      const mockPi = {
+        registerTool: vi.fn(),
+        registerCommand: vi.fn((name: string, config: CommandConfig) => {
+          if (name === "ward") wardConfig = config;
+        }),
+        on: vi.fn(),
+        events: { emit: vi.fn() },
+      };
+      // biome-ignore lint/suspicious/noExplicitAny: minimal structural mock of ExtensionFactory's `pi` param
+      await factory(mockPi as any);
+      if (wardConfig === undefined) throw new Error("ward command was not registered");
+      return wardConfig;
+    } finally {
+      process.chdir(originalCwd);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }
+
+  it("lists 'project' among top-level subcommand completions", async () => {
+    const cmd = await registerWardCommand();
+    const items = cmd.getArgumentCompletions("");
+    expect(items?.some((i) => i.value === "project")).toBe(true);
+  });
+
+  it("completes 'project allow' and 'project deny' subcommands", async () => {
+    const cmd = await registerWardCommand();
+    const items = cmd.getArgumentCompletions("project ");
+    expect(items?.map((i) => i.value)).toEqual(
+      expect.arrayContaining(["project allow", "project deny", "project list"]),
+    );
+  });
+
+  it("completes read/write operations for 'project allow'", async () => {
+    const cmd = await registerWardCommand();
+    const items = cmd.getArgumentCompletions("project allow ");
+    expect(items?.map((i) => i.value)).toEqual(expect.arrayContaining(["project allow read", "project allow write"]));
+  });
+
+  it("completes read/write operations for 'project deny'", async () => {
+    const cmd = await registerWardCommand();
+    const items = cmd.getArgumentCompletions("project deny ");
+    expect(items?.map((i) => i.value)).toEqual(expect.arrayContaining(["project deny read", "project deny write"]));
+  });
+
+  it("completes read/write operations for top-level 'allow'", async () => {
+    const cmd = await registerWardCommand();
+    const items = cmd.getArgumentCompletions("allow ");
+    expect(items?.map((i) => i.value)).toEqual(expect.arrayContaining(["allow read", "allow write"]));
   });
 });

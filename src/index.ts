@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import type { ExtensionFactory, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { wardCommandHandler } from "./command.js";
-import { loadConfig } from "./config.js";
+import { globalConfigPath, identityFor, loadConfig } from "./config.js";
 import { isDirectory } from "./fs-utils.js";
 import { GrantStore } from "./grants.js";
 import { filterGrepOutput } from "./grep-filter.js";
@@ -30,6 +30,7 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
       { value: "list", label: "list", description: "Show active session grants and denies" },
       { value: "revoke", label: "revoke", description: "Remove a session grant or deny for a path" },
       { value: "status", label: "status", description: "Show what rules and grants apply to a path" },
+      { value: "project", label: "project", description: "Manage persisted project-scoped policy rules" },
     ];
     const filtered = subcommands.filter((item) => item.value.startsWith(prefix));
     return filtered.length > 0 ? filtered : null;
@@ -53,6 +54,40 @@ export function getArgumentCompletions(prefix: string): AutocompleteItem[] | nul
     ];
     const filtered = operations.filter((item) => item.label.startsWith(afterDeny));
     return filtered.length > 0 ? filtered : null;
+  }
+
+  if (prefix.startsWith("project ")) {
+    const afterProject = prefix.slice("project ".length);
+    const projectSpaceIdx = afterProject.indexOf(" ");
+
+    if (projectSpaceIdx === -1) {
+      const subcommands: AutocompleteItem[] = [
+        { value: "project allow", label: "allow", description: "Persist an allow rule for this project" },
+        { value: "project deny", label: "deny", description: "Persist a deny rule for this project" },
+        { value: "project list", label: "list", description: "List persisted rules for this project" },
+      ];
+      const filtered = subcommands.filter((item) => item.value.startsWith(prefix));
+      return filtered.length > 0 ? filtered : null;
+    }
+
+    const projectSub = afterProject.slice(0, projectSpaceIdx);
+    if (projectSub === "allow" || projectSub === "deny") {
+      const afterSub = afterProject.slice(projectSpaceIdx + 1);
+      const operations: AutocompleteItem[] = [
+        {
+          value: `project ${projectSub} read`,
+          label: "read",
+          description: `Persist a read ${projectSub} rule for this project`,
+        },
+        {
+          value: `project ${projectSub} write`,
+          label: "write",
+          description: `Persist a read+write ${projectSub} rule for this project`,
+        },
+      ];
+      const filtered = operations.filter((item) => item.label.startsWith(afterSub));
+      return filtered.length > 0 ? filtered : null;
+    }
   }
 
   return null;
@@ -303,13 +338,59 @@ export async function handleGrepResult(
   }
 }
 
+/**
+ * Reload the complete global+project policy after a persistent `/ward project
+ * allow|deny` write, so enforcement and `/ward status` reflect it
+ * immediately.
+ *
+ * On failure, the caller should retain its prior in-memory `rules` (the disk
+ * write already succeeded), but must still fold in `newIdentity` — the
+ * replacement global config's on-disk identity — into `protectedIdentities`
+ * so alias self-protection does not regress. Atomic replacement changes the
+ * global config's inode, so this must happen even when the full reload
+ * itself fails. Prior identities are never dropped.
+ */
+export async function reloadWardPolicy(
+  projectRoot: string,
+  homeDir: string,
+  protectedIdentities: ProtectedIdentity[],
+): Promise<
+  | { ok: true; rules: ParsedRule[]; protectedIdentities: ProtectedIdentity[] }
+  | { ok: false; reason: string; protectedIdentities: ProtectedIdentity[] }
+> {
+  try {
+    const result = await loadConfig(projectRoot, homeDir);
+    return { ok: true, rules: result.rules, protectedIdentities: result.protectedIdentities };
+  } catch (err) {
+    let nextIdentities = protectedIdentities;
+    try {
+      const newIdentity = await identityFor(globalConfigPath());
+      nextIdentities = [...protectedIdentities, newIdentity];
+    } catch {
+      // Best effort — if the replacement global config can't even be stat'd,
+      // leave protectedIdentities unchanged rather than fail the whole reload path.
+    }
+    return { ok: false, reason: err instanceof Error ? err.message : String(err), protectedIdentities: nextIdentities };
+  }
+}
+
 const factory: ExtensionFactory = async (pi) => {
   const projectRoot = await realpath(process.cwd());
   const homeDir = await realpath(homedir());
-  const { rules, protectedIdentities } = await loadConfig(projectRoot, homeDir);
+  let { rules, protectedIdentities } = await loadConfig(projectRoot, homeDir);
   const grants = new GrantStore();
   let latestPrompt: string | undefined;
   const callContexts = new Map<string, string>();
+
+  async function reloadPolicy(): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const result = await reloadWardPolicy(projectRoot, homeDir, protectedIdentities);
+    protectedIdentities = result.protectedIdentities;
+    if (result.ok) {
+      rules = result.rules;
+      return { ok: true };
+    }
+    return { ok: false, reason: result.reason };
+  }
 
   pi.registerTool(createDeleteTool(projectRoot));
   pi.registerTool(createMoveTool(projectRoot));
@@ -318,7 +399,14 @@ const factory: ExtensionFactory = async (pi) => {
     description: "Manage session access grants",
     getArgumentCompletions,
     handler: async (args, ctx) => {
-      await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants, protectedIdentities });
+      await wardCommandHandler(args, ctx, {
+        rules,
+        projectRoot,
+        homeDir,
+        grants,
+        protectedIdentities,
+        reloadPolicy,
+      });
     },
   });
 

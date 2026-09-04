@@ -1,8 +1,11 @@
+import { globalConfigPath } from "./config.js";
 import { evaluate } from "./evaluator.js";
 import { isDirectory } from "./fs-utils.js";
 import type { GrantStore } from "./grants.js";
+import type { PreparedCandidate } from "./project-policy.js";
+import { listProjectRules, persistCandidate, preflightCandidate, prepareCandidate } from "./project-policy.js";
 import { resolvePath } from "./resolve.js";
-import type { Operation, ParsedRule } from "./rules.js";
+import type { Effect, Operation, ParsedRule } from "./rules.js";
 import type { ProtectedIdentity } from "./self-protect.js";
 import { isSelfProtected } from "./self-protect.js";
 
@@ -11,7 +14,11 @@ import { isSelfProtected } from "./self-protect.js";
 // ---------------------------------------------------------------------------
 
 export interface CommandContext {
-  ui: { notify(message: string, type?: "info" | "warning" | "error"): void };
+  ui: {
+    notify(message: string, type?: "info" | "warning" | "error"): void;
+    confirm?(title: string, message: string): Promise<boolean>;
+  };
+  hasUI?: boolean;
 }
 
 export interface WardCommandDeps {
@@ -20,6 +27,14 @@ export interface WardCommandDeps {
   homeDir: string;
   grants: GrantStore;
   protectedIdentities?: ProtectedIdentity[];
+  /**
+   * Reload the complete global+project policy into the caller's live
+   * closure after a successful persistent write. Returns `{ ok: false }`
+   * (without throwing) when the reload itself fails — the caller should
+   * report that disk persistence succeeded but immediate enforcement did
+   * not pick up the change.
+   */
+  reloadPolicy?: () => Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +210,162 @@ async function handleRevoke(rest: string, deps: WardCommandDeps, ctx: CommandCon
 }
 
 // ---------------------------------------------------------------------------
+// Subcommand: project
+// ---------------------------------------------------------------------------
+
+const PROJECT_USAGE =
+  "Usage: /ward project <allow|deny|list>\n" +
+  "  allow [read|write] <path>  \u2014 persist an allow rule scoped to this project (requires confirmation)\n" +
+  "  deny [read|write] <path>   \u2014 persist a deny rule scoped to this project (requires confirmation)\n" +
+  "  list                       \u2014 show persisted rules scoped to this project";
+
+async function handleProjectMutation(
+  effect: Effect,
+  rest: string,
+  deps: WardCommandDeps,
+  ctx: CommandContext,
+): Promise<void> {
+  const { operation, rawPath } = parseOperationAndPath(rest);
+
+  if (!rawPath) {
+    ctx.ui.notify(`Usage: /ward project ${effect} [read|write] <path>`, "warning");
+    return;
+  }
+
+  if (!ctx.hasUI || typeof ctx.ui.confirm !== "function") {
+    ctx.ui.notify(
+      "Persisting project policy rules requires an interactive session with confirmation support.",
+      "warning",
+    );
+    return;
+  }
+
+  let candidate: PreparedCandidate;
+  try {
+    candidate = await prepareCandidate({
+      rawPath,
+      effect,
+      operation,
+      projectRoot: deps.projectRoot,
+      homeDir: deps.homeDir,
+      protectedIdentities: deps.protectedIdentities,
+    });
+  } catch (err) {
+    ctx.ui.notify((err as Error).message, "warning");
+    return;
+  }
+
+  const projectRules = deps.rules.filter((r) => r.configDir === deps.projectRoot);
+
+  let snapshot: Awaited<ReturnType<typeof preflightCandidate>>["snapshot"];
+  let result: Awaited<ReturnType<typeof preflightCandidate>>["result"];
+  try {
+    ({ snapshot, result } = await preflightCandidate(candidate, projectRules, deps.homeDir));
+  } catch (err) {
+    ctx.ui.notify(`Cannot read existing policy config: ${(err as Error).message}`, "warning");
+    return;
+  }
+  if (!result.ok) {
+    ctx.ui.notify(result.reason, "warning");
+    return;
+  }
+
+  const previewLines: string[] = [
+    `effect: ${candidate.effect}`,
+    `operation: ${candidate.operations}`,
+    `pattern: ${candidate.pattern}`,
+    `projectRoot condition: ${candidate.rule.projectRoot}`,
+    `destination: ${globalConfigPath()}`,
+  ];
+  if (result.supersedes) {
+    previewLines.push(
+      `note: this deny would supersede an existing project rule "${result.supersedes.pattern}" ` +
+        `(effect ${result.supersedes.effect}, from ${result.supersedes.configDir})`,
+    );
+  }
+
+  let confirmed: boolean;
+  try {
+    confirmed = await ctx.ui.confirm("Persist ward policy change?", previewLines.join("\n"));
+  } catch (err) {
+    ctx.ui.notify(`Confirmation failed: ${(err as Error).message} \u2014 no changes written.`, "warning");
+    return;
+  }
+  if (!confirmed) {
+    ctx.ui.notify("Cancelled \u2014 no changes written.", "info");
+    return;
+  }
+
+  const persistResult = await persistCandidate({
+    candidate,
+    previousRaw: snapshot.raw,
+    projectRules,
+    homeDir: deps.homeDir,
+  });
+
+  if (!persistResult.ok) {
+    ctx.ui.notify(`Failed to persist: ${persistResult.reason}`, "warning");
+    return;
+  }
+
+  const reload = deps.reloadPolicy ? await deps.reloadPolicy() : { ok: false as const, reason: "reload not wired up" };
+  if (reload.ok) {
+    ctx.ui.notify(
+      `Persisted ${candidate.effect} ${candidate.operations} rule for ${candidate.pattern}. Policy reloaded.`,
+      "info",
+    );
+  } else {
+    ctx.ui.notify(
+      `Persisted ${candidate.effect} ${candidate.operations} rule for ${candidate.pattern}, but reloading the ` +
+        `in-memory policy failed (${reload.reason}) \u2014 restart to apply it.`,
+      "warning",
+    );
+  }
+}
+
+async function handleProjectList(deps: WardCommandDeps, ctx: CommandContext): Promise<void> {
+  let rules: Awaited<ReturnType<typeof listProjectRules>>;
+  try {
+    rules = await listProjectRules(deps.projectRoot, deps.homeDir);
+  } catch (err) {
+    ctx.ui.notify(`Cannot read existing policy config: ${(err as Error).message}`, "warning");
+    return;
+  }
+
+  if (rules.length === 0) {
+    ctx.ui.notify("No persisted rules scoped to this project.", "info");
+    return;
+  }
+
+  const lines: string[] = ["Persisted project rules:"];
+  for (const r of rules) {
+    lines.push(`  ${r.effect.padEnd(5)} ${r.operations.padEnd(5)} ${r.rawPattern}`);
+  }
+  ctx.ui.notify(lines.join("\n"), "info");
+}
+
+async function handleProject(rest: string, deps: WardCommandDeps, ctx: CommandContext): Promise<void> {
+  const trimmed = rest.trim();
+  const spaceIdx = trimmed.indexOf(" ");
+  const sub = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
+  const subRest = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1);
+
+  switch (sub) {
+    case "allow":
+      await handleProjectMutation("allow", subRest, deps, ctx);
+      break;
+    case "deny":
+      await handleProjectMutation("deny", subRest, deps, ctx);
+      break;
+    case "list":
+      await handleProjectList(deps, ctx);
+      break;
+    default:
+      ctx.ui.notify(PROJECT_USAGE, "warning");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Subcommand: status
 // ---------------------------------------------------------------------------
 
@@ -258,12 +429,13 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
 // ---------------------------------------------------------------------------
 
 const USAGE =
-  "Usage: /ward <allow|deny|list|revoke|status>\n" +
+  "Usage: /ward <allow|deny|list|revoke|status|project>\n" +
   "  allow [read|write] <path>  — grant session access\n" +
   "  deny [read|write] <path>   — hard session block (overrides grants/rules); default read blocks read+write\n" +
   "  list                       — show active session grants/denies\n" +
   "  revoke <path>              — remove a grant/deny\n" +
-  "  status <path>              — show what rules/grants apply to a path";
+  "  status <path>              — show what rules/grants apply to a path\n" +
+  "  project <allow|deny|list>  — manage persisted project-scoped policy rules";
 
 export async function wardCommandHandler(args: string, ctx: CommandContext, deps: WardCommandDeps): Promise<void> {
   const trimmed = args.trim();
@@ -286,6 +458,9 @@ export async function wardCommandHandler(args: string, ctx: CommandContext, deps
       break;
     case "status":
       await handleStatus(rest, deps, ctx);
+      break;
+    case "project":
+      await handleProject(rest, deps, ctx);
       break;
     default:
       ctx.ui.notify(USAGE, "warning");

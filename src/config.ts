@@ -38,7 +38,7 @@ export interface LoadResult {
  * successfully loaded. Resolves through symlinks first so aliasing via a
  * symlinked ancestor still resolves to the same identity as the real file.
  */
-async function identityFor(filePath: string): Promise<ProtectedIdentity> {
+export async function identityFor(filePath: string): Promise<ProtectedIdentity> {
   const real = (await resolveRealPath(filePath)) ?? filePath;
   const st = await stat(real);
   return { dev: st.dev, ino: st.ino };
