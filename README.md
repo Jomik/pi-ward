@@ -74,6 +74,27 @@ The `operations` field controls the access level a rule grants or restricts. It 
 
 Rules are evaluated top-to-bottom, first match wins. See [DESIGN.md](./DESIGN.md) for pattern syntax, trust scoping, and the full specification.
 
+### Persistent project rules: `/ward project`
+
+Ordinary `/ward allow`, `/ward deny`, `/ward list`, and `/ward revoke` only affect the current session — they grant or block access temporarily and vanish when the session ends. Approval prompts (accept/deny a single access) are likewise non-persistent.
+
+`/ward project allow|deny|list` instead writes a durable, personal rule that survives across sessions:
+
+```
+/ward project allow [read|write] <path>
+/ward project deny [read|write] <path>
+/ward project list
+```
+
+- The rule is always written to the trusted global config, `~/.pi/agent/ward.json` — **never** to the repository-local `<projectRoot>/.pi/ward.json`. It is scoped with an exact `projectRoot` condition matching the current project, so it only applies here.
+- `<path>` is a literal path, not a glob. A trailing slash marks it as a directory (matching the path and everything beneath it); without one, only the exact file is matched.
+- Persisting requires an interactive session — you'll see an exact preview of the rule (effect, operation, pattern, `projectRoot`, destination file) and must explicitly confirm before anything is written.
+- Rules are append-only: if an earlier global rule would already shadow the new one, the command refuses and tells you so instead of persisting a no-op. A persisted deny that would supersede an existing project-local rule reports that conflict as an informational note, but still proceeds. `/ward project allow` itself refuses to persist when an existing explicit deny — global or project-local — currently governs the target; it never silently overrides that deny.
+- On success, the in-memory policy is reloaded immediately so enforcement and `/ward status` reflect the change right away. If reloading fails (e.g. the config is now malformed), the write to disk still succeeded, but you must restart the agent to apply it — the command warns you when this happens.
+- `/ward project list` shows only rules scoped to the current project's `projectRoot`.
+- There is no `/ward project revoke` — remove a persisted rule by editing `~/.pi/agent/ward.json` directly.
+- Persisting takes a cooperative lock (`~/.pi/agent/ward.json.lock`) to avoid concurrent writers. If a previous write crashed and left a stale lock behind, `/ward project` will refuse with "another ward policy write is already in progress" — delete `~/.pi/agent/ward.json.lock` manually, but only once you've confirmed no other write is actually in progress.
+
 ### Project-Root–Scoped Rules (Global Config Only)
 
 Global rules may include a `projectRoot` field (string or string array) to restrict the rule to specific projects. A rule with `projectRoot` is only evaluated when the active session's project root exactly matches:
