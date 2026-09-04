@@ -238,6 +238,48 @@ describe("checkPath with grants", () => {
     }
   });
 
+  it("session deny scoped to read blocks both read and write on a project-local file", async () => {
+    const file = join(projectRoot, "notes.txt");
+    await writeFile(file, "hello");
+
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+    store.addDeny(resolvedFile, "read", false);
+
+    const readResult = await checkPath("read", file, "read", [], projectRoot, store);
+    expect(readResult.allowed).toBe(false);
+    if (!readResult.allowed) {
+      expect(readResult.grantable).toBe(false);
+      expect(readResult.reason).toMatch(/denied by user \(session\)/);
+    }
+
+    const writeResult = await checkPath("write", file, "write", [], projectRoot, store);
+    expect(writeResult.allowed).toBe(false);
+    if (!writeResult.allowed) {
+      expect(writeResult.grantable).toBe(false);
+      expect(writeResult.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
+  it("session deny scoped to write blocks write but allows read on a project-local file", async () => {
+    const file = join(projectRoot, "notes.txt");
+    await writeFile(file, "hello");
+
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+    store.addDeny(resolvedFile, "write", false);
+
+    const readResult = await checkPath("read", file, "read", [], projectRoot, store);
+    expect(readResult.allowed).toBe(true);
+
+    const writeResult = await checkPath("write", file, "write", [], projectRoot, store);
+    expect(writeResult.allowed).toBe(false);
+    if (!writeResult.allowed) {
+      expect(writeResult.grantable).toBe(false);
+      expect(writeResult.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
   it("session deny overrides a conflicting session allow for the same path", async () => {
     const file = join(outsideDir, "conflict.txt");
     await writeFile(file, "hello");
