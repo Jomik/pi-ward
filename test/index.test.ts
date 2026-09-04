@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GrantStore } from "../src/grants.js";
-import { extractAccess, handleGrepResult, handleToolCall, promptAccess } from "../src/index.js";
+import { extractAccess, getArgumentCompletions, handleGrepResult, handleToolCall, promptAccess } from "../src/index.js";
 import { parsePattern } from "../src/pattern.js";
 import type { ParsedRule } from "../src/rules.js";
 
@@ -172,6 +172,18 @@ describe("extractAccess", () => {
   it("returns null for unknown custom tools", () => {
     const result = extractAccess(makeEvent("my_custom_tool", { foo: "bar" }), projectRoot);
     expect(result).toBeNull();
+  });
+});
+
+describe("getArgumentCompletions", () => {
+  it("offers read/write after 'allow '", () => {
+    const result = getArgumentCompletions("allow ");
+    expect(result?.map((i) => i.label)).toEqual(["read", "write"]);
+  });
+
+  it("offers read/write after 'deny '", () => {
+    const result = getArgumentCompletions("deny ");
+    expect(result?.map((i) => i.label)).toEqual(["read", "write"]);
   });
 });
 
