@@ -5,6 +5,13 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 export interface ResolveResult {
   /** Resolved absolute real path. Only meaningful when denied is not set. */
   path: string;
+  /**
+   * Normalized absolute path *before* symlink resolution (post tilde-expansion
+   * and path.resolve normalization). Retained so callers can evaluate
+   * structural/nominal predicates (e.g. "is this literally `.pi/ward.json`?")
+   * that must not be defeated by a symlinked ancestor rewriting the real path.
+   */
+  nominalPath: string;
   /** If set, the path should be denied with this reason (before rule evaluation). */
   denied?: string;
 }
@@ -65,12 +72,16 @@ async function resolveNewFile(normalized: string): Promise<ResolveResult> {
   try {
     await lstat(normalized);
     // lstat succeeded but realpath failed — dangling/broken symlink.
-    return { path: normalized, denied: `Broken symlink at "${normalized}"` };
+    return { path: normalized, nominalPath: normalized, denied: `Broken symlink at "${normalized}"` };
   } catch (lstatErr) {
     const lstatCode = (lstatErr as { code?: string }).code;
     if (lstatCode !== "ENOENT") {
       // lstat failed for a non-ENOENT reason (e.g. EACCES, ELOOP in path components).
-      return { path: normalized, denied: `Cannot resolve path "${normalized}": ${(lstatErr as Error).message}` };
+      return {
+        path: normalized,
+        nominalPath: normalized,
+        denied: `Cannot resolve path "${normalized}": ${(lstatErr as Error).message}`,
+      };
     }
   }
 
@@ -80,13 +91,15 @@ async function resolveNewFile(normalized: string): Promise<ResolveResult> {
     if (resolved === null) {
       return {
         path: normalized,
+        nominalPath: normalized,
         denied: `Cannot resolve path "${normalized}": no existing ancestor directory`,
       };
     }
-    return { path: resolved };
+    return { path: resolved, nominalPath: normalized };
   } catch (err) {
     return {
       path: normalized,
+      nominalPath: normalized,
       denied: `Cannot resolve path "${normalized}": ${(err as Error).message}`,
     };
   }
@@ -116,12 +129,16 @@ export async function resolvePath(inputPath: string, projectRoot: string, homeDi
 
   try {
     const real = await realpath(normalized);
-    return { path: real };
+    return { path: real, nominalPath: normalized };
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === "ENOENT") {
       return resolveNewFile(normalized);
     }
-    return { path: normalized, denied: `Cannot resolve path "${normalized}": ${(err as Error).message}` };
+    return {
+      path: normalized,
+      nominalPath: normalized,
+      denied: `Cannot resolve path "${normalized}": ${(err as Error).message}`,
+    };
   }
 }

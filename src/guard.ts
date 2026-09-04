@@ -2,6 +2,7 @@ import { evaluate } from "./evaluator.js";
 import type { GrantStore } from "./grants.js";
 import { resolvePath } from "./resolve.js";
 import type { Operation, ParsedRule } from "./rules.js";
+import type { ProtectedIdentity } from "./self-protect.js";
 import { isSelfProtected } from "./self-protect.js";
 import { isDescendantOf } from "./walk.js";
 
@@ -26,6 +27,7 @@ export async function checkPath(
   projectRoot: string,
   grants?: GrantStore,
   callScopedRoot?: string,
+  protectedIdentities: ProtectedIdentity[] = [],
 ): Promise<GuardResult> {
   const resolved = await resolvePath(inputPath, projectRoot);
 
@@ -37,7 +39,7 @@ export async function checkPath(
     };
   }
 
-  if (operation === "write" && isSelfProtected(resolved.path)) {
+  if (operation === "write" && (await isSelfProtected(resolved.nominalPath, resolved.path, protectedIdentities))) {
     return {
       allowed: false,
       reason: `[pi-ward] Blocked ${toolName} (write) on ${inputPath}: ward config file is write-protected`,
@@ -104,9 +106,19 @@ export async function guard(
   rules: ParsedRule[],
   projectRoot: string,
   grants?: GrantStore,
+  protectedIdentities: ProtectedIdentity[] = [],
 ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
   for (const inputPath of paths) {
-    const result = await checkPath(toolName, inputPath, operation, rules, projectRoot, grants);
+    const result = await checkPath(
+      toolName,
+      inputPath,
+      operation,
+      rules,
+      projectRoot,
+      grants,
+      undefined,
+      protectedIdentities,
+    );
     if (!result.allowed) {
       return { allowed: false, reason: result.reason };
     }

@@ -3,6 +3,7 @@ import { isDirectory } from "./fs-utils.js";
 import type { GrantStore } from "./grants.js";
 import { resolvePath } from "./resolve.js";
 import type { Operation, ParsedRule } from "./rules.js";
+import type { ProtectedIdentity } from "./self-protect.js";
 import { isSelfProtected } from "./self-protect.js";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,7 @@ export interface WardCommandDeps {
   projectRoot: string;
   homeDir: string;
   grants: GrantStore;
+  protectedIdentities?: ProtectedIdentity[];
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +85,7 @@ async function handleAllow(rest: string, deps: WardCommandDeps, ctx: CommandCont
     return;
   }
 
-  if (operation === "write" && isSelfProtected(resolved.path)) {
+  if (operation === "write" && (await isSelfProtected(resolved.nominalPath, resolved.path, deps.protectedIdentities))) {
     ctx.ui.notify(`Cannot grant write: ${rawPath} is a ward config file (write-protected)`, "warning");
     return;
   }
@@ -219,7 +221,7 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
 
   for (const op of ["read", "write"] as Operation[]) {
     // Self-protection check for write operations takes top precedence.
-    if (op === "write" && isSelfProtected(resolved.path)) {
+    if (op === "write" && (await isSelfProtected(resolved.nominalPath, resolved.path, deps.protectedIdentities))) {
       lines.push(`  write: denied (ward config file — write-protected)`);
       continue;
     }

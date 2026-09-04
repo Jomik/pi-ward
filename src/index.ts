@@ -11,6 +11,7 @@ import { filterGrepOutput } from "./grep-filter.js";
 import { checkPath } from "./guard.js";
 import { checkPromptApproval } from "./prompt-approval.js";
 import type { Operation, ParsedRule } from "./rules.js";
+import type { ProtectedIdentity } from "./self-protect.js";
 import { createDeleteTool } from "./tools/delete.js";
 import { createMoveTool } from "./tools/move.js";
 
@@ -172,6 +173,7 @@ export async function handleToolCall(
      * leak into `GrantStore` or authorize other calls.
      */
     callContexts?: Map<string, string>;
+    protectedIdentities?: ProtectedIdentity[];
   },
 ): Promise<{ block?: boolean; reason?: string } | undefined> {
   try {
@@ -183,7 +185,16 @@ export async function handleToolCall(
     const { operation, paths } = dispatch;
 
     for (const inputPath of paths) {
-      const result = await checkPath(event.toolName, inputPath, operation, deps.rules, deps.projectRoot, deps.grants);
+      const result = await checkPath(
+        event.toolName,
+        inputPath,
+        operation,
+        deps.rules,
+        deps.projectRoot,
+        deps.grants,
+        undefined,
+        deps.protectedIdentities,
+      );
       if (result.allowed) continue;
       if (!result.grantable) return { block: true, reason: result.reason };
 
@@ -295,7 +306,7 @@ export async function handleGrepResult(
 const factory: ExtensionFactory = async (pi) => {
   const projectRoot = await realpath(process.cwd());
   const homeDir = await realpath(homedir());
-  const { rules } = await loadConfig(projectRoot, homeDir);
+  const { rules, protectedIdentities } = await loadConfig(projectRoot, homeDir);
   const grants = new GrantStore();
   let latestPrompt: string | undefined;
   const callContexts = new Map<string, string>();
@@ -307,7 +318,7 @@ const factory: ExtensionFactory = async (pi) => {
     description: "Manage session access grants",
     getArgumentCompletions,
     handler: async (args, ctx) => {
-      await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants });
+      await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants, protectedIdentities });
     },
   });
 
@@ -328,6 +339,7 @@ const factory: ExtensionFactory = async (pi) => {
       grants,
       latestPrompt,
       callContexts,
+      protectedIdentities,
     }),
   );
 };

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -8,6 +8,7 @@ import { parsePattern } from "./pattern.js";
 import { resolveRealPath } from "./resolve.js";
 import type { ParsedRule, Rule } from "./rules.js";
 import { WardConfigSchema } from "./schema.js";
+import type { ProtectedIdentity } from "./self-protect.js";
 import { isDescendantOf } from "./walk.js";
 
 export interface WardConfig {
@@ -17,6 +18,24 @@ export interface WardConfig {
 export interface LoadResult {
   /** Flat list of parsed rules, global first, project last. */
   rules: ParsedRule[];
+  /**
+   * Identity (dev, ino) of every config file that was successfully loaded and
+   * is currently in effect (global and/or project). Used by self-protection
+   * to detect a hardlink/symlink alias to an active config that doesn't
+   * structurally look like one. Empty when no config file was found.
+   */
+  protectedIdentities: ProtectedIdentity[];
+}
+
+/**
+ * Compute the on-disk identity (dev, ino) of a config file that was just
+ * successfully loaded. Resolves through symlinks first so aliasing via a
+ * symlinked ancestor still resolves to the same identity as the real file.
+ */
+async function identityFor(filePath: string): Promise<ProtectedIdentity> {
+  const real = (await resolveRealPath(filePath)) ?? filePath;
+  const st = await stat(real);
+  return { dev: st.dev, ino: st.ino };
 }
 
 /**
@@ -272,12 +291,14 @@ async function parseConfigRules(
 export async function loadConfig(projectRoot: string, homeDir?: string): Promise<LoadResult> {
   const home = homeDir ?? homedir();
   const allRules: ParsedRule[] = [];
+  const protectedIdentities: ProtectedIdentity[] = [];
 
   // Step 1: global config — always attempted
   const globalConfigPath = join(getAgentDir(), "ward.json");
   const globalConfig = await readConfigFile(globalConfigPath);
   if (globalConfig !== null) {
     allRules.push(...(await parseConfigRules(globalConfig, home, globalConfigPath, home, true)));
+    protectedIdentities.push(await identityFor(globalConfigPath));
   }
 
   // Step 2: project config
@@ -285,7 +306,8 @@ export async function loadConfig(projectRoot: string, homeDir?: string): Promise
   const projectConfig = await readConfigFile(projectConfigPath);
   if (projectConfig !== null) {
     allRules.push(...(await parseConfigRules(projectConfig, projectRoot, projectConfigPath, home)));
+    protectedIdentities.push(await identityFor(projectConfigPath));
   }
 
-  return { rules: allRules };
+  return { rules: allRules, protectedIdentities };
 }

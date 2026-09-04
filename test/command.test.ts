@@ -1,4 +1,4 @@
-import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { wardCommandHandler } from "../src/command.js";
 import { GrantStore } from "../src/grants.js";
 import { parsePattern } from "../src/pattern.js";
 import type { ParsedRule } from "../src/rules.js";
+import type { ProtectedIdentity } from "../src/self-protect.js";
 
 // ---------------------------------------------------------------------------
 // Test infrastructure
@@ -63,9 +64,14 @@ function makeRule(
   };
 }
 
-async function run(args: string, grants: GrantStore, rules: ParsedRule[] = []) {
+async function run(
+  args: string,
+  grants: GrantStore,
+  rules: ParsedRule[] = [],
+  protectedIdentities: ProtectedIdentity[] = [],
+) {
   const ctx = makeCtx();
-  await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants });
+  await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants, protectedIdentities });
   return ctx.notifications;
 }
 
@@ -209,6 +215,24 @@ describe("/ward allow", () => {
     const protectedFile = join(protectedPiDir, "ward.json");
     await writeFile(protectedFile, "{}");
     const notes = await run(`allow write ${protectedFile}`, store);
+    expect(notes[0]?.type).toBe("warning");
+    expect(notes[0]?.message).toMatch(/ward config file/);
+    expect(store.listAllows()).toHaveLength(0);
+  });
+
+  it("rejects write grants to a hardlink alias of an active config identity", async () => {
+    const store = new GrantStore();
+    // Config lives outside the .pi structural path entirely — only its
+    // active on-disk identity marks it as protected.
+    const activeConfig = join(outsideDir, "active-config.json");
+    await writeFile(activeConfig, "{}");
+    const st = await stat(activeConfig);
+    const protectedIdentities: ProtectedIdentity[] = [{ dev: st.dev, ino: st.ino }];
+
+    const alias = join(outsideDir, "alias.json");
+    await link(activeConfig, alias);
+
+    const notes = await run(`allow write ${alias}`, store, [], protectedIdentities);
     expect(notes[0]?.type).toBe("warning");
     expect(notes[0]?.message).toMatch(/ward config file/);
     expect(store.listAllows()).toHaveLength(0);
@@ -572,6 +596,21 @@ describe("/ward status", () => {
     const file = join(piDir, "ward.json");
     await writeFile(file, "{}");
     const notes = await run(`status ${file}`, store);
+    const msg = notes[0]?.message ?? "";
+    expect(msg).toMatch(/write: denied \(ward config file/);
+  });
+
+  it("reports the same self-protected write denial for a symlink alias of an active config", async () => {
+    const store = new GrantStore();
+    const activeConfig = join(outsideDir, "active-config.json");
+    await writeFile(activeConfig, "{}");
+    const st = await stat(activeConfig);
+    const protectedIdentities: ProtectedIdentity[] = [{ dev: st.dev, ino: st.ino }];
+
+    const alias = join(outsideDir, "alias-status.json");
+    await symlink(activeConfig, alias);
+
+    const notes = await run(`status ${alias}`, store, [], protectedIdentities);
     const msg = notes[0]?.message ?? "";
     expect(msg).toMatch(/write: denied \(ward config file/);
   });

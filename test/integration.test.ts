@@ -1,10 +1,11 @@
-import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { guard } from "../src/guard.js";
 import { parsePattern } from "../src/pattern.js";
 import type { ParsedRule } from "../src/rules.js";
+import type { ProtectedIdentity } from "../src/self-protect.js";
 
 let tempDir: string;
 let projectRoot: string;
@@ -149,6 +150,74 @@ describe("self-protection", () => {
     if (!result.allowed) {
       expect(result.reason).toMatch(/ward config/i);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Self-protection — active identity aliasing (symlink/hardlink)
+// ---------------------------------------------------------------------------
+
+describe("self-protection — active identity aliasing", () => {
+  async function identityOf(path: string): Promise<ProtectedIdentity> {
+    const st = await stat(path);
+    return { dev: st.dev, ino: st.ino };
+  }
+
+  it("denies write via a direct symlink alias to an active loaded config", async () => {
+    const piDir = join(projectRoot, ".pi");
+    const wardConfig = join(piDir, "ward.json");
+    await mkdir(piDir, { recursive: true });
+    await writeFile(wardConfig, '{"rules":[]}');
+
+    const identities = [await identityOf(wardConfig)];
+
+    // Alias lives elsewhere and does not structurally look like .pi/ward.json.
+    const alias = join(outsideDir, "alias.json");
+    await symlink(wardConfig, alias);
+
+    const result = await guard("write", [alias], "write", [], projectRoot, undefined, identities);
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toMatch(/ward config/i);
+    }
+  });
+
+  it("denies write via a hardlink alias to an active loaded config", async () => {
+    const piDir = join(projectRoot, ".pi");
+    const wardConfig = join(piDir, "ward.json");
+    await mkdir(piDir, { recursive: true });
+    await writeFile(wardConfig, '{"rules":[]}');
+
+    const identities = [await identityOf(wardConfig)];
+
+    const hardlinkAlias = join(outsideDir, "hardlink-alias.json");
+    await link(wardConfig, hardlinkAlias);
+
+    const result = await guard("write", [hardlinkAlias], "write", [], projectRoot, undefined, identities);
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toMatch(/ward config/i);
+    }
+  });
+
+  it("does not block an unrelated ward.json-named file that isn't loaded or aliased", async () => {
+    const piDir = join(projectRoot, ".pi");
+    const wardConfig = join(piDir, "ward.json");
+    await mkdir(piDir, { recursive: true });
+    await writeFile(wardConfig, '{"rules":[]}');
+    const identities = [await identityOf(wardConfig)];
+
+    // A completely unrelated file, not matching the structural predicate and
+    // not sharing identity with any active config.
+    const unrelated = join(outsideDir, "unrelated-notes.txt");
+    await writeFile(unrelated, "just notes");
+
+    const rules: ParsedRule[] = [makeRule(`${outsideDir}/`, "allow", "/", "write", tempDir)];
+    const result = await guard("write", [unrelated], "write", rules, projectRoot, undefined, identities);
+
+    expect(result.allowed).toBe(true);
   });
 });
 

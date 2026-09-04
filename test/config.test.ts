@@ -70,6 +70,11 @@ describe("no configs present", () => {
     const result = await loadConfig(testProject);
     expect(result.rules).toEqual([]);
   });
+
+  it("returns no protected identities when no config files exist", async () => {
+    const result = await loadConfig(testProject);
+    expect(result.protectedIdentities).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -85,6 +90,17 @@ describe("global config only", () => {
     expect(result.rules).toHaveLength(1);
     expect(result.rules[0].configDir).toBe(testHome);
     expect(result.rules[0].effect).toBe("deny");
+  });
+
+  it("returns the global config's on-disk identity in protectedIdentities", async () => {
+    const globalConfigPath = join(testHome, ".pi", "agent", "ward.json");
+    await writeConfig(globalConfigPath, cfg([{ pattern: ".env*", effect: "deny" }]));
+
+    const result = await loadConfig(testProject);
+
+    const { stat } = await import("node:fs/promises");
+    const st = await stat(globalConfigPath);
+    expect(result.protectedIdentities).toEqual([{ dev: st.dev, ino: st.ino }]);
   });
 
   it('defaults missing operations to "read"', async () => {

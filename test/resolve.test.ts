@@ -29,6 +29,7 @@ describe("normal absolute path", () => {
 
     expect(result.denied).toBeUndefined();
     expect(result.path).toBe(filePath);
+    expect(result.nominalPath).toBe(filePath);
   });
 });
 
@@ -67,6 +68,20 @@ describe("symlink", () => {
 
     expect(result.denied).toBeUndefined();
     expect(result.path).toBe(realFile);
+  });
+
+  it("retains the nominal (pre-resolution) path distinct from the resolved real path", async () => {
+    const realFile = join(projectRoot, "real.txt");
+    const linkFile = join(projectRoot, "link.txt");
+    await writeFile(realFile, "content");
+    await symlink(realFile, linkFile);
+
+    const result = await resolvePath(linkFile, projectRoot);
+
+    expect(result.denied).toBeUndefined();
+    expect(result.nominalPath).toBe(linkFile);
+    expect(result.path).toBe(realFile);
+    expect(result.nominalPath).not.toBe(result.path);
   });
 });
 
@@ -128,6 +143,8 @@ describe("non-existent parent directory", () => {
     expect(result.denied).toBeUndefined();
     // The resolved path should go through the symlink target, not the link itself.
     expect(result.path).toBe(join(outsideDir, "new-dir", "file.txt"));
+    // The nominal path preserves the pre-resolution form (through the symlink name).
+    expect(result.nominalPath).toBe(newFile);
   });
 });
 
