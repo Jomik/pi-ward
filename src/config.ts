@@ -12,7 +12,13 @@ import type { ProtectedIdentity } from "./self-protect.js";
 import { isDescendantOf } from "./walk.js";
 
 export interface WardConfig {
+  $schema?: string;
   rules: Rule[];
+}
+
+/** Absolute path to the global ward config file (`~/.pi/agent/ward.json`). */
+export function globalConfigPath(): string {
+  return join(getAgentDir(), "ward.json");
 }
 
 export interface LoadResult {
@@ -39,14 +45,12 @@ async function identityFor(filePath: string): Promise<ProtectedIdentity> {
 }
 
 /**
- * Read and JSON-parse a config file.
+ * Read the raw text content of a config file.
  * Returns null on ENOENT. Throws on EACCES or other read errors.
- * Throws on invalid JSON.
  */
-async function readConfigFile(filePath: string): Promise<WardConfig | null> {
-  let content: string;
+export async function readConfigFileRaw(filePath: string): Promise<string | null> {
   try {
-    content = await readFile(filePath, "utf-8");
+    return await readFile(filePath, "utf-8");
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === "ENOENT") {
@@ -54,22 +58,42 @@ async function readConfigFile(filePath: string): Promise<WardConfig | null> {
     }
     throw new Error(`Cannot read config file "${filePath}": ${(err as Error).message}`);
   }
+}
 
-  let raw: unknown;
+/**
+ * Parse raw config file text as JSON and validate it against WardConfigSchema.
+ * Throws with a descriptive message (including file path) on invalid JSON or
+ * any schema violation.
+ */
+export function parseConfigJson(raw: string, filePath: string): WardConfig {
+  let parsed: unknown;
   try {
-    raw = JSON.parse(content);
+    parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(`Invalid JSON in config file "${filePath}": ${(err as Error).message}`);
   }
 
-  return validateConfig(raw, filePath);
+  return validateConfig(parsed, filePath);
+}
+
+/**
+ * Read and JSON-parse a config file.
+ * Returns null on ENOENT. Throws on EACCES or other read errors.
+ * Throws on invalid JSON.
+ */
+async function readConfigFile(filePath: string): Promise<WardConfig | null> {
+  const content = await readConfigFileRaw(filePath);
+  if (content === null) return null;
+  return parseConfigJson(content, filePath);
 }
 
 /**
  * Validate the raw parsed JSON against WardConfigSchema.
  * Throws with a descriptive message (including file path) on any schema violation.
+ * Returns the validated object as-is (preserving any extra properties such as
+ * `$schema`) so round-tripping writers don't need to reconstruct it.
  */
-function validateConfig(raw: unknown, filePath: string): WardConfig {
+export function validateConfig(raw: unknown, filePath: string): WardConfig {
   if (!Value.Check(WardConfigSchema, raw)) {
     const errors = Value.Errors(WardConfigSchema, raw);
     const first = errors[0];
@@ -78,7 +102,7 @@ function validateConfig(raw: unknown, filePath: string): WardConfig {
     }
     throw new Error(`Config "${filePath}": ${first.instancePath}: ${first.message}`);
   }
-  return { rules: raw.rules };
+  return raw;
 }
 
 /**
@@ -178,7 +202,7 @@ async function resolveProjectRootValue(
  * - isGlobal is false and a rule uses `projectRoot`
  * - A `projectRoot` value is not absolute and does not start with `~/`
  */
-async function parseConfigRules(
+export async function parseConfigRules(
   config: WardConfig,
   configDir: string,
   filePath: string,
@@ -294,11 +318,11 @@ export async function loadConfig(projectRoot: string, homeDir?: string): Promise
   const protectedIdentities: ProtectedIdentity[] = [];
 
   // Step 1: global config — always attempted
-  const globalConfigPath = join(getAgentDir(), "ward.json");
-  const globalConfig = await readConfigFile(globalConfigPath);
+  const globalPath = globalConfigPath();
+  const globalConfig = await readConfigFile(globalPath);
   if (globalConfig !== null) {
-    allRules.push(...(await parseConfigRules(globalConfig, home, globalConfigPath, home, true)));
-    protectedIdentities.push(await identityFor(globalConfigPath));
+    allRules.push(...(await parseConfigRules(globalConfig, home, globalPath, home, true)));
+    protectedIdentities.push(await identityFor(globalPath));
   }
 
   // Step 2: project config
