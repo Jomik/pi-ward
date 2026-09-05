@@ -251,11 +251,11 @@ describe("schema errors", () => {
 });
 
 describe("invalid pattern syntax", () => {
-  it("throws when a rule has an invalid pattern (unanchored with /)", async () => {
+  it("loads a valid multi-segment unanchored pattern (unanchored with /)", async () => {
     const configPath = join(testProject, ".pi", "ward.json");
     await writeConfig(configPath, cfg([{ pattern: "foo/bar", effect: "deny" }]));
 
-    await expect(loadConfig(testProject)).rejects.toThrow();
+    await expect(loadConfig(testProject)).resolves.toBeDefined();
   });
 
   it("throws when a rule has a pattern with **", async () => {
@@ -473,6 +473,42 @@ describe('global config rejects "./"-anchored patterns', () => {
   it('allows "./"-anchored patterns in non-global configs', async () => {
     const configPath = join(testProject, ".pi", "ward.json");
     await writeConfig(configPath, cfg([{ pattern: "./src/", effect: "deny" }]));
+
+    await expect(loadConfig(testProject)).resolves.toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unanchored multi-segment patterns
+// ---------------------------------------------------------------------------
+
+describe("unanchored multi-segment patterns in config", () => {
+  it("loads ordered .pi/ exception rules (allow specific files, deny the rest)", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(
+      configPath,
+      cfg([
+        { pattern: ".pi/PLAN.md", effect: "allow", operations: "write" },
+        { pattern: ".pi/DESIGN.md", effect: "allow", operations: "write" },
+        { pattern: ".pi/", effect: "deny", operations: "write" },
+      ]),
+    );
+
+    const result = await loadConfig(testProject);
+
+    expect(result.rules).toHaveLength(3);
+    expect(result.rules[0].pattern.segments).toEqual([
+      { kind: "literal", value: ".pi" },
+      { kind: "literal", value: "PLAN.md" },
+    ]);
+    expect(result.rules[0].pattern.directory).toBe(false);
+    expect(result.rules[2].pattern.segments).toEqual([{ kind: "literal", value: ".pi" }]);
+    expect(result.rules[2].pattern.directory).toBe(true);
+  });
+
+  it("does not throw for an unanchored multi-segment allow pattern (trust scoped at runtime)", async () => {
+    const configPath = join(testProject, ".pi", "ward.json");
+    await writeConfig(configPath, cfg([{ pattern: ".pi/PLAN.md", effect: "allow", operations: "write" }]));
 
     await expect(loadConfig(testProject)).resolves.toBeDefined();
   });

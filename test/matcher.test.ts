@@ -159,6 +159,52 @@ describe("matches — DESIGN.md table examples", () => {
   });
 });
 
+describe("matches — unanchored multi-segment patterns", () => {
+  describe("`.pi/PLAN.md` — unanchored multi-segment, non-directory", () => {
+    it("matches the terminal path exactly", () => {
+      expect(m(".pi/PLAN.md", "/a/.pi/PLAN.md")).toBe(true);
+    });
+
+    it("does not match with an extra trailing segment (child)", () => {
+      expect(m(".pi/PLAN.md", "/a/.pi/PLAN.md/child")).toBe(false);
+    });
+
+    it("does not match a suffixed filename (PLAN.md.bak)", () => {
+      expect(m(".pi/PLAN.md", "/a/.pi/PLAN.md.bak")).toBe(false);
+    });
+
+    it("does not match when segments are separated by another directory", () => {
+      expect(m(".pi/PLAN.md", "/a/.pi/foo/PLAN.md")).toBe(false);
+    });
+
+    it("matches case-insensitively", () => {
+      expect(m(".pi/PLAN.md", "/a/.PI/plan.MD")).toBe(true);
+    });
+  });
+
+  describe("`.pi/agent/` — unanchored multi-segment directory (matches anywhere + descendants)", () => {
+    it("matches the directory node itself", () => {
+      expect(m(".pi/agent/", "/a/.pi/agent")).toBe(true);
+    });
+
+    it("matches a descendant of the directory node", () => {
+      expect(m(".pi/agent/", "/a/.pi/agent/skills/design.md")).toBe(true);
+    });
+
+    it("matches the sequence occurring mid-path (not just at the end)", () => {
+      expect(m(".pi/agent/", "/a/.pi/agent/x/.pi/agent")).toBe(true);
+    });
+
+    it("does not match when segments are not contiguous", () => {
+      expect(m(".pi/agent/", "/a/.pi/foo/agent")).toBe(false);
+    });
+
+    it("does not match when only part of the sequence is present", () => {
+      expect(m(".pi/agent/", "/a/.pi/other")).toBe(false);
+    });
+  });
+});
+
 describe("matches — additional edge cases", () => {
   it("unanchored pattern does not match across directories (literal)", () => {
     // '.env' matches any SEGMENT named '.env', not a path component like 'src/.env.local'

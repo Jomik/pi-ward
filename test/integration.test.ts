@@ -491,3 +491,79 @@ describe("rule: absolute-anchored allow read (with symlink resolution)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Unanchored multi-segment patterns — ordered .pi/ exception rules
+// ---------------------------------------------------------------------------
+
+describe("unanchored multi-segment patterns — ordered .pi/ exception rules (end-to-end)", () => {
+  function piRules(): ParsedRule[] {
+    return [
+      makeRule(".pi/PLAN.md", "allow", projectRoot, "write"),
+      makeRule(".pi/DESIGN.md", "allow", projectRoot, "write"),
+      makeRule(".pi/", "deny", projectRoot, "write"),
+    ];
+  }
+
+  it("allows writing .pi/PLAN.md and .pi/DESIGN.md", async () => {
+    const piDir = join(projectRoot, ".pi");
+    await mkdir(piDir, { recursive: true });
+    const plan = join(piDir, "PLAN.md");
+    const design = join(piDir, "DESIGN.md");
+    await writeFile(plan, "plan");
+    await writeFile(design, "design");
+
+    const rules = piRules();
+
+    expect((await guard("write", [plan], "write", rules, projectRoot)).allowed).toBe(true);
+    expect((await guard("write", [design], "write", rules, projectRoot)).allowed).toBe(true);
+  });
+
+  it("denies writing other files under .pi/", async () => {
+    const piDir = join(projectRoot, ".pi");
+    await mkdir(piDir, { recursive: true });
+    const notes = join(piDir, "notes.md");
+    await writeFile(notes, "notes");
+
+    const result = await guard("write", [notes], "write", piRules(), projectRoot);
+
+    expect(result.allowed).toBe(false);
+  });
+
+  it("denies writing .pi/PLAN.md/child (not the terminal node the allow rule names)", async () => {
+    const piDir = join(projectRoot, ".pi");
+    const planDir = join(piDir, "PLAN.md");
+    await mkdir(planDir, { recursive: true });
+    const child = join(planDir, "child");
+    await writeFile(child, "x");
+
+    const result = await guard("write", [child], "write", piRules(), projectRoot);
+
+    expect(result.allowed).toBe(false);
+  });
+
+  it("reads under .pi/ retain existing operation semantics (still readable)", async () => {
+    const piDir = join(projectRoot, ".pi");
+    await mkdir(piDir, { recursive: true });
+    const notes = join(piDir, "notes.md");
+    await writeFile(notes, "notes");
+
+    const result = await guard("read", [notes], "read", piRules(), projectRoot);
+
+    expect(result.allowed).toBe(true);
+  });
+
+  it(".pi/ward.json remains blocked by self-protection regardless of the allow rules", async () => {
+    const piDir = join(projectRoot, ".pi");
+    await mkdir(piDir, { recursive: true });
+    const wardConfig = join(piDir, "ward.json");
+    await writeFile(wardConfig, '{"rules":[]}');
+
+    const result = await guard("write", [wardConfig], "write", piRules(), projectRoot);
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.reason).toMatch(/ward config/i);
+    }
+  });
+});

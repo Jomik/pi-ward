@@ -72,6 +72,55 @@ describe("parsePattern", () => {
     });
   });
 
+  describe("unanchored multi-segment patterns", () => {
+    it("parses '.pi/PLAN.md' (multi-segment unanchored, non-directory)", () => {
+      const p = parsePattern(".pi/PLAN.md");
+      expect(p).toEqual({
+        anchored: false,
+        homeAnchored: false,
+        absoluteAnchored: false,
+        directory: false,
+        segments: [
+          { kind: "literal", value: ".pi" },
+          { kind: "literal", value: "PLAN.md" },
+        ],
+      });
+    });
+
+    it("parses '.pi/' (multi-segment unanchored directory)", () => {
+      const p = parsePattern(".pi/");
+      expect(p).toEqual({
+        anchored: false,
+        homeAnchored: false,
+        absoluteAnchored: false,
+        directory: true,
+        segments: [{ kind: "literal", value: ".pi" }],
+      });
+    });
+
+    it("parses '.pi/*.md' (wildcard within a segment of a multi-segment unanchored pattern)", () => {
+      const p = parsePattern(".pi/*.md");
+      expect(p).toEqual({
+        anchored: false,
+        homeAnchored: false,
+        absoluteAnchored: false,
+        directory: false,
+        segments: [
+          { kind: "literal", value: ".pi" },
+          { kind: "suffix", suffix: ".md" },
+        ],
+      });
+    });
+
+    it("throws for empty interior segment (.pi//PLAN.md)", () => {
+      expect(() => parsePattern(".pi//PLAN.md")).toThrow(/empty segment/);
+    });
+
+    it("throws for multiple wildcards in a single segment of a multi-segment pattern", () => {
+      expect(() => parsePattern(".pi/foo*bar*baz")).toThrow();
+    });
+  });
+
   describe("anchored patterns", () => {
     it("parses './' (everything at/below config dir)", () => {
       const p = parsePattern("./");
@@ -278,10 +327,6 @@ describe("parsePattern", () => {
   });
 
   describe("invalid patterns", () => {
-    it("throws for unanchored pattern containing '/'", () => {
-      expect(() => parsePattern("src/.env")).toThrow();
-    });
-
     it("throws for '**/*.ts' (double wildcard)", () => {
       expect(() => parsePattern("**/*.ts")).toThrow();
     });
@@ -304,6 +349,10 @@ describe("parsePattern", () => {
 
     it("throws for empty segment in anchored pattern (double slash)", () => {
       expect(() => parsePattern("./src//file.ts")).toThrow();
+    });
+
+    it("throws for empty segment in unanchored multi-segment pattern (double slash)", () => {
+      expect(() => parsePattern("src//.env")).toThrow(/empty segment/);
     });
 
     it("throws for bare '~' (likely typo for '~/')", () => {

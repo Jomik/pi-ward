@@ -386,3 +386,39 @@ describe("projectRoot condition", () => {
     expect(effect(evaluate(rules, "read", `${HOME_DIR}/other/file.ts`, otherProject))).toBe("deny");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Unanchored multi-segment patterns — ordered .pi/ exception rules
+// ---------------------------------------------------------------------------
+
+describe("unanchored multi-segment patterns — ordered .pi/ exception rules", () => {
+  function piRules(): ParsedRule[] {
+    return [
+      rule(".pi/PLAN.md", "allow", PROJECT_ROOT, "write"),
+      rule(".pi/DESIGN.md", "allow", PROJECT_ROOT, "write"),
+      rule(".pi/", "deny", PROJECT_ROOT, "write"),
+    ];
+  }
+
+  it("allows write to .pi/PLAN.md", () => {
+    expect(effect(evaluate(piRules(), "write", `${PROJECT_ROOT}/.pi/PLAN.md`, PROJECT_ROOT))).toBe("allow");
+  });
+
+  it("allows write to .pi/DESIGN.md", () => {
+    expect(effect(evaluate(piRules(), "write", `${PROJECT_ROOT}/.pi/DESIGN.md`, PROJECT_ROOT))).toBe("allow");
+  });
+
+  it("denies write to other files under .pi/", () => {
+    expect(effect(evaluate(piRules(), "write", `${PROJECT_ROOT}/.pi/ward.json`, PROJECT_ROOT))).toBe("deny");
+    expect(effect(evaluate(piRules(), "write", `${PROJECT_ROOT}/.pi/notes.md`, PROJECT_ROOT))).toBe("deny");
+  });
+
+  it("denies write to .pi/PLAN.md/child (not the terminal node the allow rule names)", () => {
+    expect(effect(evaluate(piRules(), "write", `${PROJECT_ROOT}/.pi/PLAN.md/child`, PROJECT_ROOT))).toBe("deny");
+  });
+
+  it("reads retain existing operation semantics (deny+write rule does not cover read)", () => {
+    expect(effect(evaluate(piRules(), "read", `${PROJECT_ROOT}/.pi/notes.md`, PROJECT_ROOT))).toBe("allow");
+    expect(effect(evaluate(piRules(), "read", `${PROJECT_ROOT}/.pi/PLAN.md`, PROJECT_ROOT))).toBe("allow");
+  });
+});

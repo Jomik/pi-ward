@@ -67,15 +67,29 @@ export function matches(pattern: ParsedPattern, configDir: string, absolutePath:
     return matchesAnchored(pattern, homeDir, absolutePath);
   }
 
-  // Unanchored: the pattern matches if ANY segment in the absolute path matches.
-  // For unanchored patterns, the `directory` flag has no additional effect at match time.
-  // Both `.secret` and `.secret/` match any path containing a segment that matches the pattern.
-  // The trailing `/` in `.secret/` is syntactic sugar indicating intent (this represents a directory),
-  // but the matching semantics are identical because segment matching inherently covers
-  // both the directory node and paths beneath it.
-  const segPattern = pattern.segments[0];
-  if (segPattern === undefined) return false;
-
+  // Unanchored: single-segment patterns match if ANY segment in the absolute path matches.
+  // Multi-segment patterns match a contiguous run of segments:
+  //   - directory (trailing `/`): the run may occur anywhere in the path, matching the
+  //     node itself and all descendants.
+  //   - non-directory: the run must occur only at the very end of the path (the terminal
+  //     node), never with additional trailing segments.
   const segments = absolutePath.split(/[/\\]/).filter((s) => s !== "");
-  return segments.some((seg) => matchesSegment(segPattern, seg));
+  const patSegments = pattern.segments;
+  if (patSegments.length === 0) return false;
+
+  if (patSegments.length === 1) {
+    const segPattern = patSegments[0];
+    return segments.some((seg) => matchesSegment(segPattern, seg));
+  }
+
+  if (pattern.directory) {
+    for (let start = 0; start + patSegments.length <= segments.length; start++) {
+      if (patSegments.every((sp, i) => matchesSegment(sp, segments[start + i]))) return true;
+    }
+    return false;
+  }
+
+  if (segments.length < patSegments.length) return false;
+  const start = segments.length - patSegments.length;
+  return patSegments.every((sp, i) => matchesSegment(sp, segments[start + i]));
 }

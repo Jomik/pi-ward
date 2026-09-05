@@ -23,7 +23,10 @@ export interface ParsedPattern {
   readonly directory: boolean;
   /**
    * Segment patterns.
-   * - Unanchored: always one element.
+   * - Unanchored single-segment: matches any single segment anywhere in the path.
+   * - Unanchored multi-segment: matches a contiguous run of segments — anywhere
+   *   (matching the node and all descendants) when `directory` is true, or only
+   *   at the end of the path when `directory` is false.
    * - `./`-anchored with empty array: matches everything at/below the config dir.
    * - `~/`-home-anchored with empty array: matches everything at/below the home dir.
    * - `./`-anchored or `~/`-home-anchored non-empty: each element corresponds to a path segment
@@ -103,20 +106,20 @@ function parseUnanchored(body: string, directory: boolean, raw: string): ParsedP
   if (body === "") {
     throw new Error(`Invalid pattern: empty pattern "${raw}"`);
   }
-  if (body.includes("/")) {
-    throw new Error(
-      `Invalid pattern: unanchored pattern cannot contain "/": "${raw}". Use "./" or "~/" prefix for multi-segment patterns.`,
-    );
-  }
-  const segment = parseSegmentPattern(body, raw);
-  return { anchored: false, homeAnchored: false, absoluteAnchored: false, directory, segments: [segment] };
+  const segments = body.split("/").map((part) => parseSegmentPattern(part, raw));
+  return { anchored: false, homeAnchored: false, absoluteAnchored: false, directory, segments };
 }
 
 /**
  * Parse a pattern string into a structured ParsedPattern.
  *
  * Syntax rules:
- * - No prefix → unanchored single-segment pattern. Must not contain `/`.
+ * - No prefix → unanchored pattern. May contain `/` for multi-segment matching
+ *   (each component parsed as a segment pattern; interior empty segments are rejected).
+ *   A single-segment unanchored pattern matches any segment anywhere in the path.
+ *   A multi-segment unanchored pattern matches a contiguous run of segments: anywhere
+ *   in the path (matching the node and all descendants) if trailing `/` is present,
+ *   or only at the end of the path otherwise.
  * - `./` prefix → anchored to the config directory. May contain `/`.
  * - `~/` prefix → anchored to the home directory. May contain `/`.
  * - `/` prefix → anchored to the filesystem root. May contain `/`.

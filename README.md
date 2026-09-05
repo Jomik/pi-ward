@@ -61,6 +61,26 @@ Absolute-path patterns (starting with `/`) can be used in `~/.pi/agent/ward.json
 }
 ```
 
+Unanchored patterns may span multiple segments (e.g. `.pi/PLAN.md`). Without a trailing `/`, the
+segment sequence must match the *terminal* node at the very end of the path (not a directory and
+not a path that continues beyond it); with a trailing `/`, it matches that directory sequence
+anywhere in the path plus everything beneath it — same as a single-segment directory pattern.
+This lets the agent maintain specific files inside an otherwise-protected directory:
+
+```json
+{
+  "rules": [
+    { "pattern": ".pi/PLAN.md", "operations": "write", "effect": "allow" },
+    { "pattern": ".pi/DESIGN.md", "operations": "write", "effect": "allow" },
+    { "pattern": ".pi/", "operations": "write", "effect": "deny" }
+  ]
+}
+```
+
+Here `.pi/PLAN.md` and `.pi/DESIGN.md` remain writable; every other write under `.pi/`, including
+`.pi/PLAN.md/child`, is denied — and `.pi/ward.json` stays blocked regardless, via
+self-protection.
+
 ### Operations
 
 The `operations` field controls the access level a rule grants or restricts. It defaults to `"read"` (restrictive).

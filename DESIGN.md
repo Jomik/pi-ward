@@ -69,6 +69,8 @@ Minimal pattern syntax:
 | `*.pem` | Matches any segment ending with `.pem` | `cert.pem` ✓, `foo/bar/key.pem` ✓ |
 | `*` | Matches any single segment | any file or directory name ✓ |
 | `.secret/` | Trailing `/` — matches the directory and anything under it at any depth | `.secret` ✓, `.secret/x` ✓, `foo/.secret/key.pem` ✓ |
+| `.pi/PLAN.md` | Unanchored, multi-segment, no trailing `/` — matches the contiguous segment sequence only at the *end* of the path (a terminal file, not a directory) | `/a/.pi/PLAN.md` ✓, `/a/.pi/PLAN.md/child` ✗, `.pi/PLAN.md.bak` ✗, `/a/.pi/foo/PLAN.md` ✗ |
+| `.pi/agent/` | Unanchored, multi-segment, trailing `/` — matches the contiguous segment sequence *anywhere* in the path, plus all descendants | `.pi/agent` ✓, `.pi/agent/skills/x` ✓, `x/.pi/agent` ✓ |
 | `./` | Everything at or below the config's directory | (used to allow access to the full project tree) |
 | `./.secret/` | `./` anchors to the config's directory | `.secret/x` ✓, `foo/.secret/x` ✗ |
 | `./src/*.ts` | `*` works within any segment in an anchored path | `src/index.ts` ✓, `src/lib/foo.ts` ✗ |
@@ -78,13 +80,37 @@ Minimal pattern syntax:
 | `/tmp/*.log` | Absolute path with wildcard | `/tmp/app.log` ✓, `/tmp/sub/app.log` ✗ |
 
 Rules:
-- **No prefix** — unanchored. Must be a single-segment pattern. Matches against every segment in the path.
+- **No prefix** — unanchored. May be a single segment or contain `/` for multiple segments.
+  - Single segment: matches against every segment in the path (unchanged from before).
+  - Multiple segments (e.g. `.pi/PLAN.md`): each `/`-delimited component is parsed as a segment
+    pattern (same wildcard rules as any other segment; interior empty segments are rejected).
+    - **No trailing `/` (terminal/file pattern):** the segment sequence must match *only at the
+      end* of the path — i.e. it identifies a specific terminal node, not a directory. It does not
+      match if there are additional trailing segments (e.g. a child of that node), nor if the
+      sequence appears elsewhere followed by other segments.
+    - **Trailing `/` (directory pattern):** the segment sequence may match *anywhere* in the path,
+      and matches that node plus everything beneath it, exactly like a single-segment directory
+      pattern.
+  - Example — letting the agent maintain its own planning docs while protecting the rest of `.pi/`:
+    ```json
+    {
+      "rules": [
+        { "pattern": ".pi/PLAN.md", "operations": "write", "effect": "allow" },
+        { "pattern": ".pi/DESIGN.md", "operations": "write", "effect": "allow" },
+        { "pattern": ".pi/", "operations": "write", "effect": "deny" }
+      ]
+    }
+    ```
+    This allows writes to `.pi/PLAN.md` and `.pi/DESIGN.md` specifically (first-match-wins), then
+    denies writes anywhere else under `.pi/` — including `.pi/PLAN.md/child`, which is not the
+    terminal node the first rule names. `.pi/ward.json` remains blocked regardless, by
+    self-protection.
 - **`./`** — anchored to the directory the config governs (parent of the `.pi/` directory containing the config). Can include path separators. **Not valid in the global config** (there is no governing directory).
 - **`~/`** — anchored to the home directory. The home path is captured at config load time and used for matching. Can include path separators. Useful in the global config for targeting specific paths.
 - **`/`** — absolute path anchor. Can include path separators. **Only valid in the global config.** The leading literal segments are resolved via `realpath` at config load time to canonicalize symlinks (e.g., `/tmp/repos/` → `/private/tmp/repos/` on macOS). Useful for granting access to paths outside the home directory.
 - **Trailing `/`** — directory match: the directory node itself and everything under it.
 - **`*`** — wildcard within a single segment (does not cross `/`). Matches one or more characters. Prefix (`foo*`), suffix (`*.ext`), or both (`foo*.ext`).
-- Unanchored patterns containing `/` are invalid (syntax error). Use `./` or `~/` to write multi-segment patterns.
+- Unanchored patterns may contain `/` for multi-segment matching (see table above); interior empty segments (e.g. `.pi//PLAN.md`) are invalid.
 - No `**`, no braces, no extglobs, no regex. Complexity is the enemy of a security boundary.
 - Invalid pattern syntax is a load-time error.
 
