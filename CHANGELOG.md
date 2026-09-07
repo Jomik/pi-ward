@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/Jomik/pi-ward/compare/v0.3.0...v0.4.0) (2026-09-07)
+
+
+### Features
+
+* add ward project commands ([4d2f223](https://github.com/Jomik/pi-ward/commit/4d2f2236d6b75f6bbaaad02ba2146b7fe6c37cb1))
+* allow reads beneath prompt-approved directories ([#21](https://github.com/Jomik/pi-ward/issues/21)) ([514426d](https://github.com/Jomik/pi-ward/commit/514426d9b4b41b049e606bb524aff528de37585c))
+* approve prompt-referenced external reads ([#19](https://github.com/Jomik/pi-ward/issues/19)) ([704600b](https://github.com/Jomik/pi-ward/commit/704600b0f281c0a36c23e7072ad770ec8081127a))
+* persist project-scoped policy rules ([d0f4f61](https://github.com/Jomik/pi-ward/commit/d0f4f61bd2ce16f57eccafb22b99e6c474c962d3))
+* support scoped session denies for all paths ([#22](https://github.com/Jomik/pi-ward/issues/22)) ([8334b4c](https://github.com/Jomik/pi-ward/commit/8334b4c7d28193b665ac5b69d1a3835c0fe86b7a))
+* support unanchored path patterns ([2e4d12f](https://github.com/Jomik/pi-ward/commit/2e4d12f6472df5a06cc3085954ba9497d84cafd7))
+
+
+### Bug Fixes
+
+* harden ward config self-protection ([6790f3f](https://github.com/Jomik/pi-ward/commit/6790f3f7631187b8974a01307ef13f81bea38efc))
+* use safe select prompt for project policy ([2361494](https://github.com/Jomik/pi-ward/commit/23614940664d79306b2114a189e74941356ac621))
+
 ## [0.3.0](https://github.com/Jomik/pi-ward/compare/v0.2.0...v0.3.0) (2026-08-30)
 
 
