@@ -659,7 +659,7 @@ async function writeGlobalConfig(content: unknown): Promise<void> {
 
 interface ProjectRunOpts {
   hasUI?: boolean;
-  confirmResult?: boolean;
+  selectResult?: string | undefined;
   rules?: ParsedRule[];
   protectedIdentities?: ProtectedIdentity[];
   reloadPolicy?: () => Promise<{ ok: true } | { ok: false; reason: string }>;
@@ -667,18 +667,18 @@ interface ProjectRunOpts {
 
 function makeProjectCtx(opts: ProjectRunOpts) {
   const notifications: Notification[] = [];
-  const confirmCalls: Array<{ title: string; message: string }> = [];
+  const selectCalls: Array<{ message: string; options: string[] }> = [];
   return {
     notifications,
-    confirmCalls,
+    selectCalls,
     hasUI: opts.hasUI ?? true,
     ui: {
       notify(message: string, type?: "info" | "warning" | "error") {
         notifications.push({ message, type });
       },
-      confirm: async (title: string, message: string) => {
-        confirmCalls.push({ title, message });
-        return opts.confirmResult ?? true;
+      select: async (message: string, options: string[]) => {
+        selectCalls.push({ message, options });
+        return opts.selectResult ?? "Persist";
       },
     },
   };
@@ -704,7 +704,7 @@ describe("/ward project allow|deny", () => {
     await writeFile(file, "hello");
     const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
 
-    const ctx = await runProject(`project allow ${file}`, { confirmResult: true, reloadPolicy });
+    const ctx = await runProject(`project allow ${file}`, { selectResult: "Persist", reloadPolicy });
 
     expect(ctx.notifications.at(-1)?.type).toBe("info");
     expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted allow read rule/);
@@ -720,7 +720,7 @@ describe("/ward project allow|deny", () => {
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "hello");
 
-    await runProject(`project allow write ${file}`, { confirmResult: true });
+    await runProject(`project allow write ${file}`, { selectResult: "Persist" });
 
     const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
     expect(written.rules[0]).toMatchObject({ effect: "allow", operations: "write" });
@@ -730,7 +730,7 @@ describe("/ward project allow|deny", () => {
     const file = join(outsideDir, "secret.txt");
     await writeFile(file, "data");
 
-    const ctx = await runProject(`project deny ${file}`, { confirmResult: true });
+    const ctx = await runProject(`project deny ${file}`, { selectResult: "Persist" });
 
     expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted deny read rule/);
     const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
@@ -741,10 +741,12 @@ describe("/ward project allow|deny", () => {
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "hello");
 
-    const ctx = await runProject(`project allow ${file}`, { confirmResult: false });
+    const ctx = await runProject(`project allow ${file}`, { selectResult: "Cancel" });
 
-    expect(ctx.confirmCalls).toHaveLength(1);
-    const msg = ctx.confirmCalls[0]?.message ?? "";
+    expect(ctx.selectCalls).toHaveLength(1);
+    expect(ctx.selectCalls[0]?.options).toEqual(["Cancel", "Persist"]);
+    const msg = ctx.selectCalls[0]?.message ?? "";
+    expect(msg).toMatch(/Persist ward policy change/);
     expect(msg).toMatch(/effect: allow/);
     expect(msg).toMatch(/operation: read/);
     expect(msg).toMatch(/pattern: /);
@@ -826,9 +828,13 @@ describe("/ward project allow|deny", () => {
     const projectRule = makeRule("notes.txt", "deny", projectRoot);
 
     const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
-    const ctx = await runProject(`project deny ${file}`, { confirmResult: true, rules: [projectRule], reloadPolicy });
+    const ctx = await runProject(`project deny ${file}`, {
+      selectResult: "Persist",
+      rules: [projectRule],
+      reloadPolicy,
+    });
 
-    expect(ctx.confirmCalls[0]?.message).toMatch(/supersede/);
+    expect(ctx.selectCalls[0]?.message).toMatch(/supersede/);
     expect(ctx.notifications.at(-1)?.type).toBe("info");
   });
 
@@ -837,7 +843,7 @@ describe("/ward project allow|deny", () => {
     await writeFile(file, "hello");
     const reloadPolicy = vi.fn(async () => ({ ok: false as const, reason: "boom" }));
 
-    const ctx = await runProject(`project allow ${file}`, { confirmResult: true, reloadPolicy });
+    const ctx = await runProject(`project allow ${file}`, { selectResult: "Persist", reloadPolicy });
 
     expect(ctx.notifications.at(-1)?.type).toBe("warning");
     expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted allow read rule/);
@@ -878,9 +884,9 @@ describe("/ward project list", () => {
     await writeGlobalConfig({ rules: [{ pattern: "~/outside/mine.txt", effect: "allow", projectRoot }] });
     const before = await readFile(globalConfigFile(), "utf-8");
 
-    const ctx = await runProject("project list", { confirmResult: false });
+    const ctx = await runProject("project list", { selectResult: "Cancel" });
 
-    expect(ctx.confirmCalls).toHaveLength(0);
+    expect(ctx.selectCalls).toHaveLength(0);
     const after = await readFile(globalConfigFile(), "utf-8");
     expect(after).toBe(before);
   });
@@ -902,7 +908,7 @@ describe("/ward project path parsing (whitespace preservation)", () => {
     await writeFile(file, "hello");
 
     const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
-    const ctx = await runProject(`project allow ${file}`, { confirmResult: true, reloadPolicy });
+    const ctx = await runProject(`project allow ${file}`, { selectResult: "Persist", reloadPolicy });
 
     expect(ctx.notifications.at(-1)?.type).toBe("info");
     const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
@@ -952,7 +958,7 @@ describe("/ward project confirm failure", () => {
     await writeFile(file, "hello");
 
     const ctx = makeProjectCtx({});
-    ctx.ui.confirm = vi.fn(async () => {
+    ctx.ui.select = vi.fn(async () => {
       throw new Error("confirm boom");
     });
     const grants = new GrantStore();

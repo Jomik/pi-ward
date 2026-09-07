@@ -16,7 +16,7 @@ import { isSelfProtected } from "./self-protect.js";
 export interface CommandContext {
   ui: {
     notify(message: string, type?: "info" | "warning" | "error"): void;
-    confirm?(title: string, message: string): Promise<boolean>;
+    select?(message: string, options: string[]): Promise<string | undefined>;
   };
   hasUI?: boolean;
 }
@@ -232,7 +232,7 @@ async function handleProjectMutation(
     return;
   }
 
-  if (!ctx.hasUI || typeof ctx.ui.confirm !== "function") {
+  if (!ctx.hasUI || typeof ctx.ui.select !== "function") {
     ctx.ui.notify(
       "Persisting project policy rules requires an interactive session with confirmation support.",
       "warning",
@@ -284,14 +284,14 @@ async function handleProjectMutation(
     );
   }
 
-  let confirmed: boolean;
+  let selection: string | undefined;
   try {
-    confirmed = await ctx.ui.confirm("Persist ward policy change?", previewLines.join("\n"));
+    selection = await ctx.ui.select(`Persist ward policy change?\n\n${previewLines.join("\n")}`, ["Cancel", "Persist"]);
   } catch (err) {
     ctx.ui.notify(`Confirmation failed: ${(err as Error).message} \u2014 no changes written.`, "warning");
     return;
   }
-  if (!confirmed) {
+  if (selection !== "Persist") {
     ctx.ui.notify("Cancelled \u2014 no changes written.", "info");
     return;
   }
