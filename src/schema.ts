@@ -1,36 +1,33 @@
 import { Type } from "typebox";
 
-const RuleSchema = Type.Object({
-  pattern: Type.String({
-    description:
-      "Path pattern to match. No prefix = unanchored segment match, single segment matches any path segment (e.g. `.env`, `*.pem`) or multiple slash-delimited segments match a contiguous run — at the end of the path for non-directory patterns (e.g. `.pi/PLAN.md`), or anywhere (matching the node and all descendants) for directory patterns; `./` = anchored to the config directory; `~/` = anchored to the home directory; `/` = absolute path anchor (global config only, for paths outside `~`); trailing `/` = directory match (the node itself and everything under it); `*` = wildcard matching one or more characters within a single segment.",
-    examples: [
-      ".env",
-      "*.pem",
-      ".env*",
-      ".secret/",
-      ".pi/PLAN.md",
-      "./",
-      "./src/*.ts",
-      "~/",
-      "~/.ssh/",
-      "~/.config/",
-      "/tmp/pi-github-repos/",
-      "/var/log/*.log",
-    ],
-  }),
-  operations: Type.Optional(Type.Union([Type.Literal("read"), Type.Literal("write")])),
-  effect: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
-  projectRoot: Type.Optional(
-    Type.Union([Type.String(), Type.Array(Type.String(), { minItems: 1 })], {
+const RuleSchema = Type.Object(
+  {
+    pattern: Type.String({
       description:
-        "When set, this rule only applies when the active session's project root exactly matches the given path (or any path in the array). Only valid in the global config (~/.pi/agent/ward.json). Supports absolute paths and `~/`-prefixed home-relative paths.",
-      examples: ["~/projects/backend", ["/home/user/projects/frontend", "~/projects/backend"]],
+        "Path pattern to match. No prefix = unanchored segment match, single segment matches any path segment (e.g. `.env`, `*.pem`) or multiple slash-delimited segments match a contiguous run — at the end of the path for non-directory patterns (e.g. `.pi/PLAN.md`), or anywhere (matching the node and all descendants) for directory patterns; `~/` = anchored to the home directory; `/` = absolute path anchor (global config only, for paths outside `~`); trailing `/` = directory match (the node itself and everything under it); `*` = wildcard matching one or more characters within a single segment.",
+      examples: [
+        ".env",
+        "*.pem",
+        ".env*",
+        ".secret/",
+        ".pi/PLAN.md",
+        "~/",
+        "~/.ssh/",
+        "~/.config/",
+        "/tmp/pi-github-repos/",
+        "/var/log/*.log",
+      ],
     }),
-  ),
-});
+    operations: Type.Optional(Type.Union([Type.Literal("read"), Type.Literal("write")])),
+    effect: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
+  },
+  { additionalProperties: false },
+);
 
-export const WardConfigSchema = Type.Object({
-  $schema: Type.Optional(Type.String()),
-  rules: Type.Array(RuleSchema),
-});
+export const WardConfigSchema = Type.Object(
+  {
+    $schema: Type.Optional(Type.String()),
+    rules: Type.Array(RuleSchema),
+  },
+  { additionalProperties: false },
+);

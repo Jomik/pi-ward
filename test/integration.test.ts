@@ -84,7 +84,7 @@ describe("baseline — no rules", () => {
 // ---------------------------------------------------------------------------
 
 describe("self-protection", () => {
-  it("denies write to a project ward config file", async () => {
+  it("no longer structurally protects a project ward config file (baseline write allowed)", async () => {
     const piDir = join(projectRoot, ".pi");
     const wardConfig = join(piDir, "ward.json");
     await mkdir(piDir, { recursive: true });
@@ -92,14 +92,10 @@ describe("self-protection", () => {
 
     const result = await guard("write", [wardConfig], "write", [], projectRoot);
 
-    expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.reason).toMatch(/\[pi-ward\]/);
-      expect(result.reason).toMatch(/ward config/i);
-    }
+    expect(result.allowed).toBe(true);
   });
 
-  it("denies write to any .pi/ward.json path, even outside the project", async () => {
+  it("no longer structurally protects any .pi/ward.json path, even outside the project", async () => {
     const piDir = join(outsideDir, ".pi");
     const wardConfig = join(piDir, "ward.json");
     await mkdir(piDir, { recursive: true });
@@ -108,13 +104,10 @@ describe("self-protection", () => {
     const rules: ParsedRule[] = [makeRule(`${outsideDir}/`, "allow", "/", "write", tempDir)];
     const result = await guard("write", [wardConfig], "write", rules, projectRoot);
 
-    expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.reason).toMatch(/ward config/i);
-    }
+    expect(result.allowed).toBe(true);
   });
 
-  it("allows read of a ward config file (only writes are blocked)", async () => {
+  it("allows read of a ward config file (only writes are ever considered)", async () => {
     const piDir = join(projectRoot, ".pi");
     const wardConfig = join(piDir, "ward.json");
     await mkdir(piDir, { recursive: true });
@@ -125,7 +118,7 @@ describe("self-protection", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("absolute-anchored allow rule cannot bypass write-protection of config files", async () => {
+  it("an absolute-anchored allow rule permits writes to a project config file (no structural protection)", async () => {
     const piDir = join(projectRoot, ".pi");
     const wardConfig = join(piDir, "ward.json");
     await mkdir(piDir, { recursive: true });
@@ -146,10 +139,7 @@ describe("self-protection", () => {
 
     const result = await guard("write", [wardConfig], "write", rules, projectRoot);
 
-    expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.reason).toMatch(/ward config/i);
-    }
+    expect(result.allowed).toBe(true);
   });
 });
 
@@ -553,7 +543,7 @@ describe("unanchored multi-segment patterns — ordered .pi/ exception rules (en
     expect(result.allowed).toBe(true);
   });
 
-  it(".pi/ward.json remains blocked by self-protection regardless of the allow rules", async () => {
+  it(".pi/ward.json is no longer structurally blocked by self-protection (allow rules apply normally)", async () => {
     const piDir = join(projectRoot, ".pi");
     await mkdir(piDir, { recursive: true });
     const wardConfig = join(piDir, "ward.json");
@@ -561,9 +551,8 @@ describe("unanchored multi-segment patterns — ordered .pi/ exception rules (en
 
     const result = await guard("write", [wardConfig], "write", piRules(), projectRoot);
 
+    // Not matched by the specific PLAN.md/DESIGN.md allow rules, but the
+    // generic ".pi/" deny rule applies (same as any other file under .pi/).
     expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.reason).toMatch(/ward config/i);
-    }
   });
 });

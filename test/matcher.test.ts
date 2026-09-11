@@ -5,8 +5,8 @@ import { parsePattern } from "../src/pattern.js";
 const CONFIG_DIR = "/home/user/project";
 
 /** Helper: parse and match in one call */
-function m(pattern: string, absolutePath: string, configDir = CONFIG_DIR, homeDir = "/home/user"): boolean {
-  return matches(parsePattern(pattern), configDir, absolutePath, homeDir);
+function m(pattern: string, absolutePath: string, homeDir = "/home/user"): boolean {
+  return matches(parsePattern(pattern), absolutePath, homeDir);
 }
 
 describe("matches — DESIGN.md table examples", () => {
@@ -95,68 +95,6 @@ describe("matches — DESIGN.md table examples", () => {
       expect(m(".secret/", "/base/foo/.secret/key.pem")).toBe(true);
     });
   });
-
-  describe("`./` — anchored, everything at/below config dir", () => {
-    it("matches the config dir itself", () => {
-      expect(m("./", CONFIG_DIR)).toBe(true);
-    });
-
-    it("matches a file directly under config dir", () => {
-      expect(m("./", `${CONFIG_DIR}/README.md`)).toBe(true);
-    });
-
-    it("matches a deeply nested file", () => {
-      expect(m("./", `${CONFIG_DIR}/src/lib/foo.ts`)).toBe(true);
-    });
-
-    it("does not match a sibling directory", () => {
-      expect(m("./", "/home/user/other")).toBe(false);
-    });
-
-    it("does not match an unrelated path", () => {
-      expect(m("./", "/tmp/something")).toBe(false);
-    });
-  });
-
-  describe("`./.secret/` — anchored directory pattern", () => {
-    it("matches .secret directly under config dir", () => {
-      expect(m("./.secret/", `${CONFIG_DIR}/.secret`)).toBe(true);
-    });
-
-    it("matches .secret/x under config dir", () => {
-      expect(m("./.secret/", `${CONFIG_DIR}/.secret/x`)).toBe(true);
-    });
-
-    it("does not match .secret nested further (foo/.secret/x)", () => {
-      expect(m("./.secret/", `${CONFIG_DIR}/foo/.secret/x`)).toBe(false);
-    });
-
-    it("does not match an unrelated path outside config dir", () => {
-      expect(m("./.secret/", "/home/user/other/.secret/x")).toBe(false);
-    });
-  });
-
-  describe("`./src/*.ts` — anchored multi-segment pattern", () => {
-    it("matches src/index.ts relative to config dir", () => {
-      expect(m("./src/*.ts", `${CONFIG_DIR}/src/index.ts`)).toBe(true);
-    });
-
-    it("matches src/foo.ts relative to config dir", () => {
-      expect(m("./src/*.ts", `${CONFIG_DIR}/src/foo.ts`)).toBe(true);
-    });
-
-    it("does not match src/lib/foo.ts (too many segments)", () => {
-      expect(m("./src/*.ts", `${CONFIG_DIR}/src/lib/foo.ts`)).toBe(false);
-    });
-
-    it("does not match src/foo.js (wrong extension)", () => {
-      expect(m("./src/*.ts", `${CONFIG_DIR}/src/foo.js`)).toBe(false);
-    });
-
-    it("does not match src itself (too few segments)", () => {
-      expect(m("./src/*.ts", `${CONFIG_DIR}/src`)).toBe(false);
-    });
-  });
 });
 
 describe("matches — unanchored multi-segment patterns", () => {
@@ -211,23 +149,6 @@ describe("matches — additional edge cases", () => {
     expect(m(".env", "/base/.env.local")).toBe(false);
   });
 
-  it("anchored pattern: config dir itself matches './'", () => {
-    expect(m("./", CONFIG_DIR)).toBe(true);
-  });
-
-  it("anchored directory: path exactly at pattern boundary matches", () => {
-    // ./.secret/ should match configDir/.secret (the directory node itself)
-    expect(m("./.secret/", `${CONFIG_DIR}/.secret`)).toBe(true);
-  });
-
-  it("anchored non-directory: does not match paths with more segments", () => {
-    expect(m("./src", `${CONFIG_DIR}/src/extra`)).toBe(false);
-  });
-
-  it("anchored non-directory: does not match paths with fewer segments", () => {
-    expect(m("./src/index.ts", `${CONFIG_DIR}/src`)).toBe(false);
-  });
-
   it("unanchored pattern with directory flag matches same as without for segment presence", () => {
     // .git/ (directory flag) still matches any segment named '.git' anywhere
     expect(m(".git/", "/project/.git")).toBe(true);
@@ -267,15 +188,9 @@ describe("matches — case-insensitive matching", () => {
     });
   });
 
-  describe("`./src/*.ts` anchored pattern matches uppercase extension", () => {
-    it("matches CONFIG_DIR/src/index.TS", () => {
-      expect(m("./src/*.ts", `${CONFIG_DIR}/src/index.TS`)).toBe(true);
-    });
-  });
-
   describe("`~/.ssh/` home-anchored pattern matches uppercase directory", () => {
     it("matches HOME_DIR/.SSH/id_rsa", () => {
-      expect(m("~/.ssh/", "/home/user/.SSH/id_rsa", CONFIG_DIR, "/home/user")).toBe(true);
+      expect(m("~/.ssh/", "/home/user/.SSH/id_rsa", "/home/user")).toBe(true);
     });
   });
 
@@ -343,8 +258,8 @@ describe("matches — absolute-anchored patterns", () => {
     });
   });
 
-  describe("absolute-anchored ignores configDir", () => {
-    it("matches regardless of what configDir is", () => {
+  describe("absolute-anchored ignores configDir/homeDir", () => {
+    it("matches regardless of homeDir", () => {
       expect(m("/tmp/foo/", "/tmp/foo/bar", "/some/other/dir")).toBe(true);
     });
   });
@@ -353,112 +268,109 @@ describe("matches — absolute-anchored patterns", () => {
 describe("matches — home-anchored patterns", () => {
   describe("`~/` — everything at/below home dir", () => {
     it("matches the home dir itself", () => {
-      expect(m("~/", HOME_DIR, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/", HOME_DIR, HOME_DIR)).toBe(true);
     });
 
     it("matches a file directly under home dir", () => {
-      expect(m("~/", `${HOME_DIR}/README.md`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/", `${HOME_DIR}/README.md`, HOME_DIR)).toBe(true);
     });
 
     it("matches a deeply nested file under home", () => {
-      expect(m("~/", `${HOME_DIR}/projects/foo/src/index.ts`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/", `${HOME_DIR}/projects/foo/src/index.ts`, HOME_DIR)).toBe(true);
     });
 
     it("does not match a path outside home", () => {
-      expect(m("~/", "/tmp/something", CONFIG_DIR, HOME_DIR)).toBe(false);
+      expect(m("~/", "/tmp/something", HOME_DIR)).toBe(false);
     });
   });
 
   describe("`~/.ssh/` — home-anchored directory", () => {
     it("matches .ssh directly under home", () => {
-      expect(m("~/.ssh/", `${HOME_DIR}/.ssh`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/.ssh/", `${HOME_DIR}/.ssh`, HOME_DIR)).toBe(true);
     });
 
     it("matches .ssh/id_rsa under home", () => {
-      expect(m("~/.ssh/", `${HOME_DIR}/.ssh/id_rsa`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/.ssh/", `${HOME_DIR}/.ssh/id_rsa`, HOME_DIR)).toBe(true);
     });
 
     it("does not match .ssh nested further (projects/.ssh/key)", () => {
-      expect(m("~/.ssh/", `${HOME_DIR}/projects/.ssh/key`, CONFIG_DIR, HOME_DIR)).toBe(false);
+      expect(m("~/.ssh/", `${HOME_DIR}/projects/.ssh/key`, HOME_DIR)).toBe(false);
     });
 
     it("does not match an unrelated path outside home", () => {
-      expect(m("~/.ssh/", "/tmp/.ssh/id_rsa", CONFIG_DIR, HOME_DIR)).toBe(false);
+      expect(m("~/.ssh/", "/tmp/.ssh/id_rsa", HOME_DIR)).toBe(false);
     });
   });
 
   describe("`~/.pi/agent/skills/` — deeply nested home-anchored directory", () => {
     it("matches /home/user/.pi/agent/skills/design/SKILL.md", () => {
-      expect(m("~/.pi/agent/skills/", `${HOME_DIR}/.pi/agent/skills/design/SKILL.md`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/.pi/agent/skills/", `${HOME_DIR}/.pi/agent/skills/design/SKILL.md`, HOME_DIR)).toBe(true);
     });
 
     it("does not match path at wrong nesting level", () => {
-      expect(m("~/.pi/agent/skills/", `${HOME_DIR}/.pi/agent/SKILL.md`, CONFIG_DIR, HOME_DIR)).toBe(false);
+      expect(m("~/.pi/agent/skills/", `${HOME_DIR}/.pi/agent/SKILL.md`, HOME_DIR)).toBe(false);
     });
   });
 
   describe("`~/file.txt` — exact home-anchored file", () => {
     it("matches exactly /home/user/file.txt", () => {
-      expect(m("~/file.txt", `${HOME_DIR}/file.txt`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/file.txt", `${HOME_DIR}/file.txt`, HOME_DIR)).toBe(true);
     });
 
     it("does not match /home/user/subdir/file.txt (too many segments)", () => {
-      expect(m("~/file.txt", `${HOME_DIR}/subdir/file.txt`, CONFIG_DIR, HOME_DIR)).toBe(false);
+      expect(m("~/file.txt", `${HOME_DIR}/subdir/file.txt`, HOME_DIR)).toBe(false);
     });
   });
 
   describe("`~/*.pem` — home-anchored suffix wildcard", () => {
     it("matches /home/user/cert.pem", () => {
-      expect(m("~/*.pem", `${HOME_DIR}/cert.pem`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/*.pem", `${HOME_DIR}/cert.pem`, HOME_DIR)).toBe(true);
     });
 
     it("does not match /home/user/subdir/cert.pem (too many segments)", () => {
-      expect(m("~/*.pem", `${HOME_DIR}/subdir/cert.pem`, CONFIG_DIR, HOME_DIR)).toBe(false);
+      expect(m("~/*.pem", `${HOME_DIR}/subdir/cert.pem`, HOME_DIR)).toBe(false);
     });
   });
 
   describe("`~/projects/*.ts` — home-anchored multi-segment", () => {
     it("matches projects/index.ts relative to home", () => {
-      expect(m("~/projects/*.ts", `${HOME_DIR}/projects/index.ts`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/projects/*.ts", `${HOME_DIR}/projects/index.ts`, HOME_DIR)).toBe(true);
     });
 
     it("does not match projects/lib/foo.ts (too many segments)", () => {
-      expect(m("~/projects/*.ts", `${HOME_DIR}/projects/lib/foo.ts`, CONFIG_DIR, HOME_DIR)).toBe(false);
+      expect(m("~/projects/*.ts", `${HOME_DIR}/projects/lib/foo.ts`, HOME_DIR)).toBe(false);
     });
 
     it("does not match projects/foo.js (wrong extension)", () => {
-      expect(m("~/projects/*.ts", `${HOME_DIR}/projects/foo.js`, CONFIG_DIR, HOME_DIR)).toBe(false);
+      expect(m("~/projects/*.ts", `${HOME_DIR}/projects/foo.js`, HOME_DIR)).toBe(false);
     });
   });
 
   describe("`~/.config/` — home-anchored directory matches node and descendants", () => {
     it("matches /home/user/.config (directory node itself)", () => {
-      expect(m("~/.config/", `${HOME_DIR}/.config`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/.config/", `${HOME_DIR}/.config`, HOME_DIR)).toBe(true);
     });
 
     it("matches /home/user/.config/anything", () => {
-      expect(m("~/.config/", `${HOME_DIR}/.config/anything`, CONFIG_DIR, HOME_DIR)).toBe(true);
+      expect(m("~/.config/", `${HOME_DIR}/.config/anything`, HOME_DIR)).toBe(true);
     });
   });
 
-  describe("home-anchored uses homeDir, not configDir", () => {
-    it("matches path under homeDir even when it is outside configDir", () => {
-      // configDir is /home/user/project, homeDir is /home/user
-      // ~/ should anchor to homeDir, not configDir
-      expect(m("~/", `${HOME_DIR}/other-project/file.ts`, CONFIG_DIR, HOME_DIR)).toBe(true);
+  describe("home-anchored uses homeDir, not any other directory", () => {
+    it("matches path under homeDir even when it is outside CONFIG_DIR", () => {
+      expect(m("~/", `${HOME_DIR}/other-project/file.ts`, HOME_DIR)).toBe(true);
     });
 
-    it("does not confuse homeDir and configDir", () => {
-      // ~/other does NOT match configDir/other — it must be relative to homeDir
-      expect(m("~/other", `${CONFIG_DIR}/other`, CONFIG_DIR, HOME_DIR)).toBe(false);
-      expect(m("~/other", `${HOME_DIR}/other`, CONFIG_DIR, HOME_DIR)).toBe(true);
+    it("does not confuse homeDir with an unrelated directory", () => {
+      expect(m("~/other", `${CONFIG_DIR}/other`, HOME_DIR)).toBe(false);
+      expect(m("~/other", `${HOME_DIR}/other`, HOME_DIR)).toBe(true);
     });
   });
 
   describe("throws when homeDir is omitted for home-anchored patterns", () => {
     it("throws if homeDir is undefined", () => {
       const pattern = parsePattern("~/.ssh/");
-      expect(() => matches(pattern, CONFIG_DIR, `${HOME_DIR}/.ssh/id_rsa`)).toThrow(/homeDir is required/);
+      expect(() => matches(pattern, `${HOME_DIR}/.ssh/id_rsa`)).toThrow(/homeDir is required/);
     });
   });
 });

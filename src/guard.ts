@@ -1,5 +1,7 @@
 import { evaluate } from "./evaluator.js";
 import type { GrantStore } from "./grants.js";
+import { matchesProjectGrants } from "./grants.js";
+import type { ParsedGrant } from "./project-grants.js";
 import { resolvePath } from "./resolve.js";
 import type { Operation, ParsedRule } from "./rules.js";
 import type { ProtectedIdentity } from "./self-protect.js";
@@ -12,11 +14,16 @@ export type GuardResult =
   | { allowed: false; reason: string; grantable: true; resolvedPath: string; operation: Operation };
 
 /**
- * Check a single path against rules, self-protection, and the grant store.
+ * Check a single path against self-protection, session denies, persistent
+ * project grants, rules, and the session grant store.
+ *
+ * Evaluation order: resolve → self-protect → session deny → persistent
+ * project grant → global rule evaluator → baseline / session grant /
+ * call-scoped approval.
  *
  * Returns:
  * - `{ allowed: true }` — access permitted.
- * - `{ allowed: false; grantable: false }` — hard deny (explicit rule or resolve error). No grant possible.
+ * - `{ allowed: false; grantable: false }` — hard deny (self-protection, session deny, explicit rule, or resolve error). No grant possible.
  * - `{ allowed: false; grantable: true; resolvedPath; operation }` — baseline deny that the user can override.
  */
 export async function checkPath(
@@ -28,6 +35,7 @@ export async function checkPath(
   grants?: GrantStore,
   callScopedRoot?: string,
   protectedIdentities: ProtectedIdentity[] = [],
+  projectGrants: ParsedGrant[] = [],
 ): Promise<GuardResult> {
   const resolved = await resolvePath(inputPath, projectRoot);
 
@@ -39,10 +47,10 @@ export async function checkPath(
     };
   }
 
-  if (operation === "write" && (await isSelfProtected(resolved.nominalPath, resolved.path, protectedIdentities))) {
+  if (await isSelfProtected(resolved.nominalPath, resolved.path, operation, protectedIdentities)) {
     return {
       allowed: false,
-      reason: `[pi-ward] Blocked ${toolName} (write) on ${inputPath}: ward config file is write-protected`,
+      reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: ward config file is ${operation}-protected`,
       grantable: false,
     };
   }
@@ -56,6 +64,14 @@ export async function checkPath(
       reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user (session)`,
       grantable: false,
     };
+  }
+
+  // Persistent project grants are an explicit, trusted exception layer: they
+  // may override an ordinary global deny rule, so they are checked before
+  // rule evaluation. They are allow-only and never override self-protection
+  // or session denies, both already checked above.
+  if (matchesProjectGrants(projectGrants, resolved.path, operation)) {
+    return { allowed: true };
   }
 
   const result = evaluate(rules, operation, resolved.path, projectRoot);
@@ -107,6 +123,7 @@ export async function guard(
   projectRoot: string,
   grants?: GrantStore,
   protectedIdentities: ProtectedIdentity[] = [],
+  projectGrants: ParsedGrant[] = [],
 ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
   for (const inputPath of paths) {
     const result = await checkPath(
@@ -118,6 +135,7 @@ export async function guard(
       grants,
       undefined,
       protectedIdentities,
+      projectGrants,
     );
     if (!result.allowed) {
       return { allowed: false, reason: result.reason };

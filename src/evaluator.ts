@@ -40,7 +40,7 @@ function ruleApplies(effect: Effect, ruleOps: Operation, incomingOp: Operation):
  * - Path at/below projectRoot → allow
  * - Path outside projectRoot → deny
  *
- * @param rules       - Ordered list of parsed rules (global first, project last).
+ * @param rules       - Ordered list of parsed rules (first-match-wins order as loaded; only the global config is currently loaded as declarative policy).
  * @param operation   - The operation being attempted.
  * @param absolutePath - The resolved absolute path being accessed.
  * @param projectRoot - The session's working directory (resolved absolute path).
@@ -59,16 +59,11 @@ export function evaluate(
   }
 
   for (const rule of rules) {
-    // 0. Project-root condition: skip rule if session's projectRoot doesn't match.
-    if (rule.projectRoots !== undefined) {
-      if (!rule.projectRoots.includes(projectRoot)) continue;
-    }
-
     // 1. Operation must cover the incoming operation.
     if (!ruleApplies(rule.effect, rule.operations, operation)) continue;
 
     // 2. Path must match the pattern.
-    if (!matches(rule.pattern, rule.configDir, absolutePath, rule.homeDir)) continue;
+    if (!matches(rule.pattern, absolutePath, rule.homeDir)) continue;
 
     // 3. Trust scoping: allow rules are only effective within the config's directory.
     if (rule.effect === "allow") {

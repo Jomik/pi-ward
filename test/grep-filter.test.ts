@@ -1,10 +1,12 @@
-import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { filterGrepOutput } from "../src/grep-filter.js";
 import { parsePattern } from "../src/pattern.js";
+import type { ParsedGrant } from "../src/project-grants.js";
 import type { ParsedRule } from "../src/rules.js";
+import type { ProtectedIdentity } from "../src/self-protect.js";
 
 let tempDir: string;
 let projectRoot: string;
@@ -452,5 +454,73 @@ describe("filterGrepOutput — approvedRoot", () => {
 
     expect(result.dropped).toBe(1);
     expect(result.text).not.toContain("hello");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// projectGrants (persistent project grant precedence)
+// ---------------------------------------------------------------------------
+
+describe("filterGrepOutput — protectedIdentities (self-protection alias)", () => {
+  it("blocks output through a hardlink alias of an active protectRead identity (e.g. ward.id)", async () => {
+    // Simulate an active ward.id: a real file whose active identity has
+    // protectRead set, then a hardlink alias under a different, ordinary
+    // name that structurally looks like nothing special.
+    const realFile = join(projectRoot, "ward.id");
+    await writeFile(realFile, "identity-secret");
+    const st = await stat(realFile);
+    const protectedIdentities: ProtectedIdentity[] = [{ dev: st.dev, ino: st.ino, protectRead: true }];
+
+    const alias = join(projectRoot, "alias-not-ward-id.txt");
+    await link(realFile, alias);
+
+    const text = matchLine("alias-not-ward-id.txt", 1, "identity-secret");
+    const result = await filterGrepOutput(
+      text,
+      projectRoot,
+      [],
+      projectRoot,
+      undefined,
+      undefined,
+      undefined,
+      protectedIdentities,
+    );
+
+    expect(result.text).not.toContain("identity-secret");
+    expect(result.dropped).toBe(1);
+    expect(result.files).toBe(1);
+  });
+});
+
+describe("filterGrepOutput — projectGrants", () => {
+  it("a persistent project grant keeps a file that would otherwise be a baseline deny", async () => {
+    const outsideDir = join(tempDir, "outside");
+    await mkdir(outsideDir, { recursive: true });
+    const file = join(outsideDir, "shared.txt");
+    await writeFile(file, "hello");
+    const resolvedFile = await realpath(file);
+
+    const projectGrants: ParsedGrant[] = [{ resolvedPath: resolvedFile, operations: "read", directory: false }];
+    const text = matchLine("shared.txt", 1, "hello");
+    const result = await filterGrepOutput(text, outsideDir, [], projectRoot, undefined, undefined, projectGrants);
+
+    expect(result.dropped).toBe(0);
+    expect(result.text).toBe(text);
+  });
+
+  it("a persistent project grant overrides an explicit global deny rule", async () => {
+    const outsideDir = join(tempDir, "outside");
+    await mkdir(outsideDir, { recursive: true });
+    const file = join(outsideDir, ".env");
+    await writeFile(file, "SECRET=1");
+    const resolvedFile = await realpath(file);
+
+    const rules: ParsedRule[] = [denyRule(".env", outsideDir)];
+    const projectGrants: ParsedGrant[] = [{ resolvedPath: resolvedFile, operations: "read", directory: false }];
+    const text = matchLine(".env", 1, "SECRET=1");
+    const result = await filterGrepOutput(text, outsideDir, rules, projectRoot, undefined, undefined, projectGrants);
+
+    expect(result.dropped).toBe(0);
+    expect(result.text).toBe(text);
   });
 });
