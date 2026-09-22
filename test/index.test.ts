@@ -6,6 +6,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GrantStore } from "../src/grants.js";
 import factory, {
+  describeToolCall,
   extractAccess,
   getArgumentCompletions,
   handleGrepResult,
@@ -197,6 +198,26 @@ describe("extractAccess", () => {
   });
 });
 
+describe("describeToolCall", () => {
+  it("includes the pattern and search path for 'find'", () => {
+    const event = makeEvent("find", { pattern: "**/project.assets.json", path: "~/orca" });
+    const summary = describeToolCall(event, "read", "~/orca");
+    expect(summary).toBe("find **/project.assets.json in ~/orca");
+  });
+
+  it("includes the pattern and search path for 'grep'", () => {
+    const event = makeEvent("grep", { pattern: "TODO", path: "/outside/src" });
+    const summary = describeToolCall(event, "read", "/outside/src");
+    expect(summary).toBe("grep TODO in /outside/src");
+  });
+
+  it("falls back to '<operation> <path>' for other guarded tools", () => {
+    const path = "/outside/file.txt";
+    expect(describeToolCall(makeReadEvent(path), "read", path)).toBe(`read ${path}`);
+    expect(describeToolCall(makeWriteEvent(path), "write", path)).toBe(`write ${path}`);
+  });
+});
+
 describe("getArgumentCompletions", () => {
   it("offers read/write after 'allow '", () => {
     const result = getArgumentCompletions("allow ");
@@ -265,6 +286,28 @@ describe("promptAccess herdr reporting", () => {
     await promptAccess(events, ctx, "read", "read", path, path, new GrantStore());
 
     expect(events.emit).not.toHaveBeenCalled();
+  });
+
+  it("shows the provided summary (not generic '<operation> <path>') in the prompt and herdr label", async () => {
+    const events = { emit: vi.fn() };
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string) => (message.startsWith("Access") ? "Approve" : "Once")),
+      },
+    };
+    const summary = "find **/project.assets.json in ~/orca";
+
+    await promptAccess(events, ctx, "find", "read", "~/orca", "/home/user/orca", new GrantStore(), summary);
+
+    expect(events.emit).toHaveBeenNthCalledWith(1, "herdr:blocked", {
+      active: true,
+      label: `Ward approval: ${summary}`,
+    });
+    expect(ctx.ui.select).toHaveBeenNthCalledWith(1, `Access outside project root:\n\n  ${summary}`, [
+      "Deny",
+      "Approve",
+    ]);
   });
 });
 
@@ -345,6 +388,46 @@ describe("handleToolCall", () => {
 
     expect(result).toBeUndefined();
     expect(ctx.ui.select).toHaveBeenCalled();
+  });
+
+  it("shows the find pattern and search path in the access prompt (not generic 'read <path>')", async () => {
+    const dir = outsideDir;
+    const ctx = makeCtx(async (msg) => (msg.startsWith("Access") ? "Approve" : "Once"));
+    const grants = new GrantStore();
+    const findEvent = makeEvent("find", { pattern: "**/project.assets.json", path: dir });
+
+    const result = await handleToolCall(
+      findEvent,
+      ctx,
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: undefined }),
+    );
+
+    expect(result).toBeUndefined();
+    expect(ctx.ui.select).toHaveBeenNthCalledWith(
+      1,
+      `Access outside project root:\n\n  find **/project.assets.json in ${dir}`,
+      ["Deny", "Approve"],
+    );
+  });
+
+  it("shows the grep pattern and search path in the access prompt (not generic 'read <path>')", async () => {
+    const dir = outsideDir;
+    const ctx = makeCtx(async (msg) => (msg.startsWith("Access") ? "Approve" : "Once"));
+    const grants = new GrantStore();
+
+    const result = await handleToolCall(
+      makeGrepEvent(dir),
+      ctx,
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: undefined }),
+    );
+
+    expect(result).toBeUndefined();
+    expect(ctx.ui.select).toHaveBeenNthCalledWith(1, `Access outside project root:\n\n  grep foo in ${dir}`, [
+      "Deny",
+      "Approve",
+    ]);
   });
 
   it("does not consult the prompt for a no-prompt state (falls through to UI prompting)", async () => {

@@ -133,6 +133,22 @@ export function extractAccess(
 /** Genuine (non-extension-originated) input sources that qualify as prompt approval context. */
 const GENUINE_INPUT_SOURCES = new Set(["interactive", "rpc"]);
 
+/**
+ * Build a concise, tool-accurate summary of a guarded call for display in
+ * the access-approval UI and the herdr blocked-status label. This is
+ * display-only: it never feeds back into authorization checks or grants,
+ * which continue to operate solely on `operation` and the resolved path.
+ */
+export function describeToolCall(event: ToolCallEvent, operation: Operation, inputPath: string): string {
+  if (isToolCallEventType("find", event)) {
+    return `find ${event.input.pattern} in ${inputPath}`;
+  }
+  if (isToolCallEventType("grep", event)) {
+    return `grep ${event.input.pattern} in ${inputPath}`;
+  }
+  return `${operation} ${inputPath}`;
+}
+
 export async function promptAccess(
   events: { emit(channel: string, data: unknown): void },
   ctx: { hasUI: boolean; ui: { select(msg: string, options: string[]): Promise<string | undefined> } },
@@ -141,6 +157,7 @@ export async function promptAccess(
   inputPath: string,
   resolvedPath: string,
   grants: GrantStore,
+  summary: string = `${operation} ${inputPath}`,
 ): Promise<{ block: true; reason: string } | undefined> {
   if (!ctx.hasUI) {
     return {
@@ -149,12 +166,9 @@ export async function promptAccess(
     };
   }
 
-  events.emit("herdr:blocked", { active: true, label: `Ward approval: ${operation} ${inputPath}` });
+  events.emit("herdr:blocked", { active: true, label: `Ward approval: ${summary}` });
   try {
-    const action = await ctx.ui.select(`Access outside project root:\n\n  ${operation} ${inputPath}`, [
-      "Deny",
-      "Approve",
-    ]);
+    const action = await ctx.ui.select(`Access outside project root:\n\n  ${summary}`, ["Deny", "Approve"]);
 
     if (!action) {
       return { block: true, reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: dismissed` };
@@ -251,6 +265,7 @@ export async function handleToolCall(
         inputPath,
         result.resolvedPath,
         deps.grants,
+        describeToolCall(event, operation, inputPath),
       );
       if (blocked) return blocked;
     }
