@@ -183,10 +183,18 @@ export async function promptAccess(
       return { block: true, reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user` };
     }
 
-    const scope = await ctx.ui.select("Approve scope:", ["Once", "For session"]);
-    if (scope === "For session") {
-      const dir = await isDirectory(resolvedPath);
-      grants.addAllow(resolvedPath, operation, dir);
+    const dir = await isDirectory(resolvedPath);
+    const scopeOptions = dir
+      ? ["Once", "This directory for session"]
+      : ["Once", "This file for session", "Parent directory for session"];
+    const scope = await ctx.ui.select("Approve scope:", scopeOptions);
+
+    if (scope === "This directory for session") {
+      grants.addAllow(resolvedPath, operation, true);
+    } else if (scope === "This file for session") {
+      grants.addAllow(resolvedPath, operation, false);
+    } else if (scope === "Parent directory for session") {
+      grants.addAllow(dirname(resolvedPath), operation, true);
     }
 
     return undefined;

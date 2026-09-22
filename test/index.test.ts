@@ -309,6 +309,112 @@ describe("promptAccess herdr reporting", () => {
       "Approve",
     ]);
   });
+
+  let scopeTempDir: string;
+
+  afterEach(async () => {
+    if (scopeTempDir) await rm(scopeTempDir, { recursive: true, force: true });
+  });
+
+  async function makeScopeDirs() {
+    const base = join(tmpdir(), `pi-ward-prompt-scope-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(base, { recursive: true });
+    scopeTempDir = base;
+    return base;
+  }
+
+  it("offers directory-only scope options and grants recursively for a directory target", async () => {
+    const dir = await makeScopeDirs();
+    const events = { emit: vi.fn() };
+    const grants = new GrantStore();
+    let capturedOptions: string[] | undefined;
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string, options?: string[]) => {
+          if (message.startsWith("Approve scope")) capturedOptions = options;
+          return message.startsWith("Access") ? "Approve" : "This directory for session";
+        }),
+      },
+    };
+
+    await promptAccess(events, ctx, "read", "read", dir, dir, grants);
+
+    expect(capturedOptions).toEqual(["Once", "This directory for session"]);
+    expect(grants.listAllows()).toEqual([{ path: dir, operation: "read", directory: true }]);
+
+    const nested = join(dir, "child.txt");
+    expect(grants.isAllowed(nested, "read")).toBe(true);
+  });
+
+  it("offers file-scope options including parent directory for a file target", async () => {
+    const dir = await makeScopeDirs();
+    const file = join(dir, "secret.txt");
+    await writeFile(file, "x");
+    const events = { emit: vi.fn() };
+    const grants = new GrantStore();
+    let capturedOptions: string[] | undefined;
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string, options?: string[]) => {
+          if (message.startsWith("Approve scope")) capturedOptions = options;
+          return message.startsWith("Access") ? "Approve" : "This file for session";
+        }),
+      },
+    };
+
+    await promptAccess(events, ctx, "read", "read", file, file, grants);
+
+    expect(capturedOptions).toEqual(["Once", "This file for session", "Parent directory for session"]);
+    expect(grants.listAllows()).toEqual([{ path: file, operation: "read", directory: false }]);
+  });
+
+  it("grants the parent directory recursively when 'Parent directory for session' is selected", async () => {
+    const dir = await makeScopeDirs();
+    const file = join(dir, "secret.txt");
+    await writeFile(file, "x");
+    const events = { emit: vi.fn() };
+    const grants = new GrantStore();
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string) =>
+          message.startsWith("Access") ? "Approve" : "Parent directory for session",
+        ),
+      },
+    };
+
+    await promptAccess(events, ctx, "read", "read", file, file, grants);
+
+    expect(grants.listAllows()).toEqual([{ path: dir, operation: "read", directory: true }]);
+
+    const sibling = join(dir, "other.txt");
+    expect(grants.isAllowed(sibling, "read")).toBe(true);
+  });
+
+  it("stores no grant when 'Once' is selected, for both directory and file targets", async () => {
+    const dir = await makeScopeDirs();
+    const file = join(dir, "secret.txt");
+    await writeFile(file, "x");
+    const events = { emit: vi.fn() };
+
+    const dirGrants = new GrantStore();
+    const dirCtx = {
+      hasUI: true,
+      ui: { select: vi.fn(async (message: string) => (message.startsWith("Access") ? "Approve" : "Once")) },
+    };
+    await promptAccess(events, dirCtx, "read", "read", dir, dir, dirGrants);
+    expect(dirGrants.listAllows()).toEqual([]);
+
+    const fileGrants = new GrantStore();
+    const fileCtx = {
+      hasUI: true,
+      ui: { select: vi.fn(async (message: string) => (message.startsWith("Access") ? "Approve" : "Once")) },
+    };
+    await promptAccess(events, fileCtx, "read", "read", file, file, fileGrants);
+    expect(fileGrants.listAllows()).toEqual([]);
+  });
 });
 
 describe("handleToolCall", () => {
