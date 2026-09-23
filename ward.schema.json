@@ -21,15 +21,13 @@
         "properties": {
           "pattern": {
             "type": "string",
-            "description": "Path pattern to match. No prefix = unanchored segment match, single segment matches any path segment (e.g. `.env`, `*.pem`) or multiple slash-delimited segments match a contiguous run — at the end of the path for non-directory patterns (e.g. `.pi/PLAN.md`), or anywhere (matching the node and all descendants) for directory patterns; `./` = anchored to the config directory; `~/` = anchored to the home directory; `/` = absolute path anchor (global config only, for paths outside `~`); trailing `/` = directory match (the node itself and everything under it); `*` = wildcard matching one or more characters within a single segment.",
+            "description": "Path pattern to match. No prefix = unanchored segment match, single segment matches any path segment (e.g. `.env`, `*.pem`) or multiple slash-delimited segments match a contiguous run — at the end of the path for non-directory patterns (e.g. `.pi/PLAN.md`), or anywhere (matching the node and all descendants) for directory patterns; `~/` = anchored to the home directory; `/` = absolute path anchor (global config only, for paths outside `~`); trailing `/` = directory match (the node itself and everything under it); `*` = wildcard matching one or more characters within a single segment.",
             "examples": [
               ".env",
               "*.pem",
               ".env*",
               ".secret/",
               ".pi/PLAN.md",
-              "./",
-              "./src/*.ts",
               "~/",
               "~/.ssh/",
               "~/.config/",
@@ -60,31 +58,11 @@
                 "const": "deny"
               }
             ]
-          },
-          "projectRoot": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "minItems": 1
-              }
-            ],
-            "description": "When set, this rule only applies when the active session's project root exactly matches the given path (or any path in the array). Only valid in the global config (~/.pi/agent/ward.json). Supports absolute paths and `~/`-prefixed home-relative paths.",
-            "examples": [
-              "~/projects/backend",
-              [
-                "/home/user/projects/frontend",
-                "~/projects/backend"
-              ]
-            ]
           }
-        }
+        },
+        "additionalProperties": false
       }
     }
-  }
+  },
+  "additionalProperties": false
 }

@@ -1,4 +1,4 @@
-import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
@@ -1023,18 +1023,129 @@ describe("reloadWardPolicy", () => {
   });
 
   it("on failure, leaves protectedIdentities unchanged when the replacement config can't be stat'd either", async () => {
-    // No global config file exists at all — identityFor(globalConfigPath()) will
-    // also fail (ENOENT), so the prior identities list must be preserved as-is.
-    await rm(join(testHome, ".pi", "agent"), { recursive: true, force: true });
-    await mkdir(join(testProjectRoot, ".pi"), { recursive: true });
-    await writeFile(join(testProjectRoot, ".pi", "ward.json"), "{ not valid json");
+    // Skip when running as root — permission checks are bypassed.
+    if (typeof process.getuid === "function" && process.getuid() === 0) {
+      return;
+    }
+
+    // Make the agent directory unreadable so loadConfig fails with a
+    // non-ENOENT error, and the subsequent identityFor(globalConfigPath())
+    // attempt also fails (can't stat through the inaccessible directory).
+    const agentDir = join(testHome, ".pi", "agent");
+    await chmod(agentDir, 0o000);
     const priorIdentity = { dev: 2, ino: 2 };
 
-    const result = await reloadWardPolicy(testProjectRoot, testHome, [priorIdentity]);
+    try {
+      const result = await reloadWardPolicy(testProjectRoot, testHome, [priorIdentity]);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.protectedIdentities).toEqual([priorIdentity]);
+      }
+    } finally {
+      await chmod(agentDir, 0o755);
+    }
+  });
+
+  it("loads persistent project grants on success", async () => {
+    await writeFile(join(testProjectRoot, ".pi", "ward.id"), "550e8400-e29b-41d4-a716-446655440000");
+    const grantsDir = join(testHome, ".pi", "agent", "ward");
+    await mkdir(grantsDir, { recursive: true });
+    const target = join(testHome, "shared");
+    await mkdir(target, { recursive: true });
+    await writeFile(
+      join(grantsDir, "550e8400-e29b-41d4-a716-446655440000.grants.json"),
+      JSON.stringify({ grants: [{ path: "~/shared/", operations: "read" }] }),
+    );
+
+    const result = await reloadWardPolicy(testProjectRoot, testHome, []);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.projectGrants).toEqual([{ resolvedPath: target, operations: "read", directory: true }]);
+      // Both ward.id and the grants file identities are folded in.
+      expect(result.protectedIdentities).toHaveLength(2);
+    }
+  });
+
+  it("on failure, retains the prior projectGrants passed in", async () => {
+    await writeFile(globalConfigPath, "{ not valid json");
+    const priorGrants = [{ resolvedPath: "/prior/path", operations: "read" as const, directory: false }];
+
+    const result = await reloadWardPolicy(testProjectRoot, testHome, [], priorGrants);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.protectedIdentities).toEqual([priorIdentity]);
+      expect(result.projectGrants).toEqual(priorGrants);
+    }
+  });
+
+  it("on failure after an atomic grants-file replacement, retains the old grants identity and folds in the new one", async () => {
+    const id = "550e8400-e29b-41d4-a716-446655440000";
+    await writeFile(join(testProjectRoot, ".pi", "ward.id"), id);
+    const grantsDir = join(testHome, ".pi", "agent", "ward");
+    await mkdir(grantsDir, { recursive: true });
+    const grantsPath = join(grantsDir, `${id}.grants.json`);
+    const target = join(testHome, "shared");
+    await mkdir(target, { recursive: true });
+    await writeFile(grantsPath, JSON.stringify({ grants: [{ path: "~/shared/", operations: "read" }] }));
+    const oldGrantsStat = await stat(grantsPath);
+    const oldGrantsIdentity = { dev: oldGrantsStat.dev, ino: oldGrantsStat.ino };
+
+    // Simulate an atomic replacement (rename into place) that lands
+    // malformed content under a new inode — e.g. a concurrent writer.
+    const tmpPath = `${grantsPath}.tmp`;
+    await writeFile(tmpPath, "not valid json");
+    await rename(tmpPath, grantsPath);
+    const newGrantsStat = await stat(grantsPath);
+    expect(newGrantsStat.ino === oldGrantsStat.ino && newGrantsStat.dev === oldGrantsStat.dev).toBe(false);
+
+    const result = await reloadWardPolicy(testProjectRoot, testHome, [oldGrantsIdentity], []);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(/Invalid JSON/);
+      expect(result.protectedIdentities).toContainEqual(oldGrantsIdentity);
+      expect(result.protectedIdentities).toContainEqual({ dev: newGrantsStat.dev, ino: newGrantsStat.ino });
+    }
+  });
+
+  it("on failure after ward.id is atomically replaced with malformed content at a new inode, retains the old identity and still protects the new one with protectRead", async () => {
+    const oldId = "550e8400-e29b-41d4-a716-446655440000";
+    const idPath = join(testProjectRoot, ".pi", "ward.id");
+    await writeFile(idPath, oldId);
+    const oldIdStat = await stat(idPath);
+    const oldIdIdentity = { dev: oldIdStat.dev, ino: oldIdStat.ino, protectRead: true };
+
+    // Simulate an atomic replacement (rename into place) that lands
+    // genuinely malformed content (not a UUID) under a new inode — e.g. a
+    // concurrent writer or corruption. Grants lookup can't be derived from
+    // this, but the new ward.id inode must still be protected best-effort.
+    const tmpPath = `${idPath}.tmp`;
+    await writeFile(tmpPath, "not-a-uuid");
+    await rename(tmpPath, idPath);
+    const newIdStat = await stat(idPath);
+    expect(newIdStat.ino === oldIdStat.ino && newIdStat.dev === oldIdStat.dev).toBe(false);
+
+    // Force the reload itself to fail for an unrelated reason (malformed
+    // global config), so identity refresh runs on the failure path while
+    // the caller's prior rules/grants are left untouched by this function.
+    await writeFile(globalConfigPath, "{ not valid json");
+    const priorGrants = [{ resolvedPath: "/prior/path", operations: "read" as const, directory: false }];
+
+    const result = await reloadWardPolicy(testProjectRoot, testHome, [oldIdIdentity], priorGrants);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(/Invalid JSON/);
+      expect(result.protectedIdentities).toContainEqual(oldIdIdentity);
+      expect(result.protectedIdentities).toContainEqual({
+        dev: newIdStat.dev,
+        ino: newIdStat.ino,
+        protectRead: true,
+      });
+      // Prior grants are retained unchanged on a failed reload.
+      expect(result.projectGrants).toEqual(priorGrants);
     }
   });
 });
@@ -1081,11 +1192,11 @@ describe("ward command autocomplete", () => {
     expect(items?.some((i) => i.value === "project")).toBe(true);
   });
 
-  it("completes 'project allow' and 'project deny' subcommands", async () => {
+  it("completes 'project allow', 'project list', and 'project revoke' subcommands", async () => {
     const cmd = await registerWardCommand();
     const items = cmd.getArgumentCompletions("project ");
     expect(items?.map((i) => i.value)).toEqual(
-      expect.arrayContaining(["project allow", "project deny", "project list"]),
+      expect.arrayContaining(["project allow", "project list", "project revoke"]),
     );
   });
 
@@ -1095,15 +1206,129 @@ describe("ward command autocomplete", () => {
     expect(items?.map((i) => i.value)).toEqual(expect.arrayContaining(["project allow read", "project allow write"]));
   });
 
-  it("completes read/write operations for 'project deny'", async () => {
+  it("does not complete operations for 'project list' or 'project revoke'", async () => {
     const cmd = await registerWardCommand();
-    const items = cmd.getArgumentCompletions("project deny ");
-    expect(items?.map((i) => i.value)).toEqual(expect.arrayContaining(["project deny read", "project deny write"]));
+    expect(cmd.getArgumentCompletions("project list ")).toBeNull();
+    expect(cmd.getArgumentCompletions("project revoke ")).toBeNull();
   });
 
   it("completes read/write operations for top-level 'allow'", async () => {
     const cmd = await registerWardCommand();
     const items = cmd.getArgumentCompletions("allow ");
     expect(items?.map((i) => i.value)).toEqual(expect.arrayContaining(["allow read", "allow write"]));
+  });
+});
+
+describe("factory fail-closed startup", () => {
+  type ToolCallHandler = (
+    event: ToolCallEvent,
+    ctx: unknown,
+  ) => Promise<{ block?: boolean; reason?: string } | undefined>;
+  type WardConfig = {
+    handler: (args: string, ctx: { ui: { notify: (message: string, type?: string) => void } }) => Promise<void>;
+  };
+
+  /** Install the extension with a broken on-disk state and capture its registered hooks/command. */
+  async function setupBrokenFactory(setup: (cwd: string) => Promise<void>): Promise<{
+    cwd: string;
+    registerTool: ReturnType<typeof vi.fn>;
+    onToolCall: ToolCallHandler;
+    wardConfig: WardConfig;
+  }> {
+    const base = join(tmpdir(), `pi-ward-startup-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(join(base, ".pi", "agent"), { recursive: true });
+    const cwd = await realpath(base);
+    mockGetAgentDir.mockReturnValue(join(cwd, ".pi", "agent"));
+    await setup(cwd);
+
+    const originalCwd = process.cwd();
+    process.chdir(cwd);
+    try {
+      let wardConfig: WardConfig | undefined;
+      const handlers = new Map<string, ToolCallHandler>();
+      const registerTool = vi.fn();
+      const mockPi = {
+        registerTool,
+        registerCommand: vi.fn((name: string, config: WardConfig) => {
+          if (name === "ward") wardConfig = config;
+        }),
+        on: vi.fn((event: string, handler: ToolCallHandler) => {
+          handlers.set(event, handler);
+        }),
+        events: { emit: vi.fn() },
+      };
+      // biome-ignore lint/suspicious/noExplicitAny: minimal structural mock of ExtensionFactory's `pi` param
+      await factory(mockPi as any);
+      const onToolCall = handlers.get("tool_call");
+      if (wardConfig === undefined || onToolCall === undefined) {
+        throw new Error("factory did not register the ward command and/or tool_call hook");
+      }
+      return { cwd, registerTool, onToolCall, wardConfig };
+    } finally {
+      process.chdir(originalCwd);
+    }
+  }
+
+  async function expectBlocksGuardedReadsAndWardCommands(
+    cwd: string,
+    registerTool: ReturnType<typeof vi.fn>,
+    onToolCall: ToolCallHandler,
+    wardConfig: WardConfig,
+    expectedErrorFragment: RegExp,
+  ): Promise<void> {
+    // Guarded tools are still registered.
+    expect(registerTool).toHaveBeenCalledTimes(2);
+
+    // A guarded read is blocked with a persistent policy-load error...
+    const file = join(cwd, "README.md");
+    await writeFile(file, "hello");
+    const readEvent = { type: "tool_call", toolCallId: "t1", toolName: "read", input: { path: file } } as ToolCallEvent;
+    const ctx = { hasUI: false, ui: { select: vi.fn() } };
+    const result = await onToolCall(readEvent, ctx);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toMatch(expectedErrorFragment);
+
+    // ...while a non-file/unrecognized tool is unaffected.
+    const bashEvent = {
+      type: "tool_call",
+      toolCallId: "t2",
+      toolName: "bash",
+      input: { command: "ls" },
+    } as ToolCallEvent;
+    expect(await onToolCall(bashEvent, ctx)).toBeUndefined();
+
+    // /ward commands refuse to run and report repair/reload required, rather
+    // than reporting or mutating normal policy state.
+    const notifications: Array<{ message: string; type?: string }> = [];
+    await wardConfig.handler("list", {
+      ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) },
+    });
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.type).toBe("error");
+    expect(notifications[0]?.message).toMatch(expectedErrorFragment);
+    expect(notifications[0]?.message).toMatch(/reload.*restart/);
+  }
+
+  it("blocks guarded reads and disables /ward when the global config is malformed", async () => {
+    const { cwd, registerTool, onToolCall, wardConfig } = await setupBrokenFactory(async (dir) => {
+      await writeFile(join(dir, ".pi", "agent", "ward.json"), "{ not valid json");
+    });
+    try {
+      await expectBlocksGuardedReadsAndWardCommands(cwd, registerTool, onToolCall, wardConfig, /Invalid JSON/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks guarded reads and disables /ward when the project ward.id is malformed", async () => {
+    const { cwd, registerTool, onToolCall, wardConfig } = await setupBrokenFactory(async (dir) => {
+      await mkdir(join(dir, ".pi"), { recursive: true });
+      await writeFile(join(dir, ".pi", "ward.id"), "not-a-uuid");
+    });
+    try {
+      await expectBlocksGuardedReadsAndWardCommands(cwd, registerTool, onToolCall, wardConfig, /canonical UUID/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });

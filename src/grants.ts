@@ -1,4 +1,5 @@
 import { operationCovers } from "./evaluator.js";
+import type { ParsedGrant } from "./project-grants.js";
 import type { Operation } from "./rules.js";
 import { isDescendantOf } from "./walk.js";
 
@@ -9,6 +10,42 @@ export interface Decision {
   operation: Operation;
   /** If true, covers the path itself and everything under it. */
   directory: boolean;
+}
+
+/**
+ * Match a list of `Decision`-shaped entries against an absolute path for a
+ * given operation and effect, using the same semantics as `GrantStore`
+ * ("write implies read" via `operationCovers`, exact-file vs.
+ * recursive-directory matching). Shared so persistent project grants reuse
+ * exactly the same matching logic as session grants, rather than a second
+ * matcher abstraction.
+ */
+export function matchDecisions(
+  decisions: Decision[],
+  absolutePath: string,
+  operation: Operation,
+  effect: "allow" | "deny",
+): boolean {
+  for (const decision of decisions) {
+    if (!operationCovers(effect, decision.operation, operation)) continue;
+    const matches = decision.directory ? isDescendantOf(decision.path, absolutePath) : decision.path === absolutePath;
+    if (matches) return true;
+  }
+  return false;
+}
+
+/**
+ * Check whether a resolved absolute path is covered by an active project's
+ * persistent grants (always allow-only). Reuses `matchDecisions` by mapping
+ * each `ParsedGrant` to the same `Decision` shape used for session grants.
+ */
+export function matchesProjectGrants(grants: ParsedGrant[], absolutePath: string, operation: Operation): boolean {
+  const decisions: Decision[] = grants.map((g) => ({
+    path: g.resolvedPath,
+    operation: g.operations,
+    directory: g.directory,
+  }));
+  return matchDecisions(decisions, absolutePath, operation, "allow");
 }
 
 /**
@@ -34,11 +71,11 @@ export class GrantStore {
   }
 
   isAllowed(absolutePath: string, operation: Operation): boolean {
-    return this.matchDecisions(this.allows, absolutePath, operation, "allow");
+    return matchDecisions(this.allows, absolutePath, operation, "allow");
   }
 
   isDenied(absolutePath: string, operation: Operation): boolean {
-    return this.matchDecisions(this.denies, absolutePath, operation, "deny");
+    return matchDecisions(this.denies, absolutePath, operation, "deny");
   }
 
   /** Return a copy of current session allows (for inspection/testing). */
@@ -67,22 +104,5 @@ export class GrantStore {
   clear(): void {
     this.allows = [];
     this.denies = [];
-  }
-
-  private matchDecisions(
-    decisions: Decision[],
-    absolutePath: string,
-    operation: Operation,
-    effect: "allow" | "deny",
-  ): boolean {
-    for (const decision of decisions) {
-      if (!operationCovers(effect, decision.operation, operation)) continue;
-      if (this.pathMatches(decision, absolutePath)) return true;
-    }
-    return false;
-  }
-
-  private pathMatches(decision: Decision, absolutePath: string): boolean {
-    return decision.directory ? isDescendantOf(decision.path, absolutePath) : decision.path === absolutePath;
   }
 }

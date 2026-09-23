@@ -52,7 +52,7 @@ A rule specifies a pattern, which operations it governs, and what effect to appl
 | `deny` | `"read"` (default) | Denies all access (can't read → can't write) |
 | `deny` | `"write"` | Denies writes only (path becomes read-only) |
 
-Project baseline (inside projectRoot, no matching rule): full write access.
+Project baseline (inside the project root with no matching rule): full read/write access.
 
 - **effect** — `allow` or `deny`.
 
@@ -71,9 +71,6 @@ Minimal pattern syntax:
 | `.secret/` | Trailing `/` — matches the directory and anything under it at any depth | `.secret` ✓, `.secret/x` ✓, `foo/.secret/key.pem` ✓ |
 | `.pi/PLAN.md` | Unanchored, multi-segment, no trailing `/` — matches the contiguous segment sequence only at the *end* of the path (a terminal file, not a directory) | `/a/.pi/PLAN.md` ✓, `/a/.pi/PLAN.md/child` ✗, `.pi/PLAN.md.bak` ✗, `/a/.pi/foo/PLAN.md` ✗ |
 | `.pi/agent/` | Unanchored, multi-segment, trailing `/` — matches the contiguous segment sequence *anywhere* in the path, plus all descendants | `.pi/agent` ✓, `.pi/agent/skills/x` ✓, `x/.pi/agent` ✓ |
-| `./` | Everything at or below the config's directory | (used to allow access to the full project tree) |
-| `./.secret/` | `./` anchors to the config's directory | `.secret/x` ✓, `foo/.secret/x` ✗ |
-| `./src/*.ts` | `*` works within any segment in an anchored path | `src/index.ts` ✓, `src/lib/foo.ts` ✗ |
 | `~/.ssh/` | `~/` anchors to the home directory (absolute) | `~/.ssh/id_rsa` ✓, `/tmp/.ssh/key` ✗ |
 | `~/.pi/agent/skills/` | Home-anchored directory match | `~/.pi/agent/skills/design/SKILL.md` ✓ |
 | `/tmp/repos/` | Absolute path — matches the directory and everything under it (global config only) | `/tmp/repos/foo` ✓, `/var/repos/foo` ✗ |
@@ -103,11 +100,10 @@ Rules:
     ```
     This allows writes to `.pi/PLAN.md` and `.pi/DESIGN.md` specifically (first-match-wins), then
     denies writes anywhere else under `.pi/` — including `.pi/PLAN.md/child`, which is not the
-    terminal node the first rule names. `.pi/ward.json` remains blocked regardless, by
+    terminal node the first rule names. `.pi/ward.id` remains blocked regardless, by
     self-protection.
-- **`./`** — anchored to the directory the config governs (parent of the `.pi/` directory containing the config). Can include path separators. **Not valid in the global config** (there is no governing directory).
 - **`~/`** — anchored to the home directory. The home path is captured at config load time and used for matching. Can include path separators. Useful in the global config for targeting specific paths.
-- **`/`** — absolute path anchor. Can include path separators. **Only valid in the global config.** The leading literal segments are resolved via `realpath` at config load time to canonicalize symlinks (e.g., `/tmp/repos/` → `/private/tmp/repos/` on macOS). Useful for granting access to paths outside the home directory.
+- **`/`** — absolute path anchor. Can include path separators. The leading literal segments are resolved via `realpath` at config load time to canonicalize symlinks (e.g., `/tmp/repos/` → `/private/tmp/repos/` on macOS). Useful for granting access to paths outside the home directory.
 - **Trailing `/`** — directory match: the directory node itself and everything under it.
 - **`*`** — wildcard within a single segment (does not cross `/`). Matches one or more characters. Prefix (`foo*`), suffix (`*.ext`), or both (`foo*.ext`).
 - Unanchored patterns may contain `/` for multi-segment matching (see table above); interior empty segments (e.g. `.pi//PLAN.md`) are invalid.
@@ -116,30 +112,16 @@ Rules:
 
 ### Configuration
 
-Exactly two config files are loaded per session:
+Ward loads one declarative policy file:
 
-1. `~/.pi/agent/ward.json` — **global config**, configDir = home directory.
-2. `<projectRoot>/.pi/ward.json` — **project config**, configDir = project root.
+- `~/.pi/agent/ward.json` — optional trusted global policy, scoped to the user's home directory.
 
-Each is optional — ENOENT is silently skipped. Any other read error fails closed. Rules are concatenated in load order (global first, project last) into a single flat list. First match wins — global rules always take precedence.
+ENOENT means an empty policy. Any other read, parse, schema, or pattern error fails closed. Rules evaluate top-to-bottom with first-match-wins semantics. There is no project-local policy file and no ancestor search. The former `<projectRoot>/.pi/ward.json` location and `projectRoot` rule condition are removed.
 
-Regardless of project location, only the global config and the project config are loaded. No ancestor directories are consulted.
+The global config can allow within `~` and deny any path. An absolute-anchored allow uses `/` as its trust scope and may therefore grant paths outside the home directory. An allow that can never take effect within its trust scope is a load-time error.
 
-**Why global wins:** This inverts the "most-specific-wins" convention familiar from gitconfig or eslint. The inversion is deliberate: a security boundary must not allow untrusted inner configs to weaken trusted outer configs. Global rules are set by the user; project configs may come from cloned repos.
+Example `~/.pi/agent/ward.json`:
 
-**Trust asymmetry between the two configs:** the global config is trusted — it is user-authored and lives outside any repository. The project config (`<projectRoot>/.pi/ward.json`) is untrusted: it may be checked into and cloned with the repository it governs, so its author is whoever controls that repository's contents, not necessarily the user. A project config can express policy for its own tree (e.g. denying writes to its own `.git/`), but it can never expand authority beyond the project root, and it can never override or weaken a global rule — self-protection does not make repository-supplied content trusted. Personal per-project grants (e.g. "let project A read sibling directory B") therefore belong in the global config, scoped with an exact-match `projectRoot` condition (see below), not in the project's own config.
-The global config's scope is the home directory — it can allow access anywhere at or below `~`. Additionally, absolute-path patterns (starting with `/`) in the global config can allow access to paths outside `~` (e.g., `/tmp/pi-github-repos/`).
-
-**Trust scoping:** A config can only `allow` access to paths at or below the directory it governs. This is enforced at match time: when a rule matches and its effect is `allow`, the resolved absolute path must be at or below the config's trust scope for the allow to take effect. If not, the rule is skipped and evaluation continues to the next rule.
-
-A config can `deny` any path regardless of scope.
-
-- Global config's trust scope is the home directory — it can `allow` within `~`, and `deny` any path. Absolute-anchored allow rules (prefix `/`) use `/` as their trust scope, meaning they can match any absolute path; they are restricted to the global config only for security.
-- Project config's trust scope is the project root — it can `allow` access within the project tree.
-- An `allow` rule that can never take effect (pattern structurally references outside the config's scope) is a load-time error.
-- `./` patterns are rejected in the global config at load time (use `~/` or unanchored patterns instead).
-
-Example `~/.pi/agent/ward.json` (global config):
 ```json
 {
   "rules": [
@@ -152,58 +134,44 @@ Example `~/.pi/agent/ward.json` (global config):
 }
 ```
 
-This says: allow reading the skills directory from any project, deny `.env*` and `*.pem` everywhere, deny `~/.ssh`.
+### Persistent Project Grants
 
-### Project-Root Conditions (Global Config Only)
+Persistent project grants are trusted, allow-only decisions stored outside the project:
 
-Global rules may include an optional top-level `projectRoot` field (string or array of strings) to scope the rule to a specific project. A rule with `projectRoot` is skipped unless the active session's project root exactly matches the given path (or any path in the array). **Project configs may not use `projectRoot`** — this is a load-time error.
+```text
+<projectRoot>/.pi/ward.id
+~/.pi/agent/ward/<id>.grants.json
+```
 
-Use cases:
+`ward.id` contains a randomly generated UUID. It is created lazily by the `/ward project` UI when the first grant is persisted; merely opening or listing a project does not create it. Agent worktrees that carry their gitignored `.pi` directory therefore carry the same identity and select the same grants regardless of their canonical root path. Ward does not inspect Git or Jujutsu metadata and does not derive identity from a repository path, remote, or commit.
 
-- **Sibling project access** — grant read/write access to a related repo only when the agent is working in a specific project:
-  ```json
-  {
-    "rules": [
-      {
-        "pattern": "~/projects/shared-lib/",
-        "effect": "allow",
-        "operations": "read",
-        "projectRoot": "~/projects/backend"
-      }
-    ]
-  }
-  ```
-  This allows the backend project to read `~/projects/shared-lib/` while any other project cannot.
+The ID is a local bearer capability: possession selects its trusted grant file. It must remain local and gitignored. Ward validates the exact UUID syntax before using it as a filename, and guarded tools cannot read, create, modify, move, or delete any `.pi/ward.id`. Ward does not invoke Git or Jujutsu to verify ignore state. If an ID is committed or otherwise leaked, any project carrying that ID on the same machine inherits its grants; recovery is to revoke the grants, delete the old grants file, and generate a new ID. External processes and copying outside guarded tools remain outside Ward's threat model.
 
-- **Multiple projects** — apply the same rule to a set of projects using an array:
-  ```json
-  {
-    "rules": [
-      {
-        "pattern": "~/projects/shared-lib/",
-        "effect": "allow",
-        "operations": "read",
-        "projectRoot": ["~/projects/backend", "~/projects/api"]
-      }
-    ]
-  }
-  ```
+Ward's internal ID reader accepts only a small regular file at the exact nominal `<projectRoot>/.pi/ward.id` path, rejects symlinks and non-regular files, bounds the input size, and requires one canonical UUID plus optional trailing newline. Any other state fails closed.
 
-**Path resolution:** `projectRoot` values are resolved at config load time. Both absolute paths and `~/`-prefixed home-relative paths are supported. Symlinks are resolved via `realpath`. A `projectRoot` value that does not exist on disk is stored as its normalized form — it will never match a real (realpath-resolved) session project root, so the rule condition is unsatisfiable. An unresolvable path (EACCES, ELOOP, etc.) is a load-time error.
+The corresponding file under `~/.pi/agent/ward/` contains only literal grants:
 
-**Matching:** exact resolved path equality between the stored `projectRoot` and the session's `projectRoot`. No prefix/descendant matching — the project root must match exactly. Requiring both a canonical, exact match and residence in the trusted global config is what keeps this mechanism from becoming a general-purpose grant store: it is one condition on one already-trusted config, not a new place to store authority.
-
-**Rules without `projectRoot`** are unchanged — they apply to all projects as before.
-
-Example project-level `.pi/ward.json`:
 ```json
 {
-  "rules": [
-    { "pattern": ".git/", "operations": "write", "effect": "deny" },
-    { "pattern": ".secret/", "effect": "deny" }
+  "grants": [
+    { "path": "~/.pi/agent/agents/", "operations": "read" },
+    { "path": "/tmp/shared-output/", "operations": "write" }
   ]
 }
 ```
+
+- `path` is an absolute or `~/`-prefixed literal path. An existing directory is detected and granted recursively even without a trailing `/`; a trailing `/` requests directory scope for a path that does not yet exist. Globs and relative paths are rejected.
+- `operations` is `"read"` or `"write"`; write implies read. It defaults to `"read"`.
+- Every entry is an allow. Persistent project denies do not exist; persistent denies belong in the global policy, while temporary denies remain session-scoped.
+- The grants file is trusted because it lives under the global agent directory and is writable only through Ward's confirmed management UI. The canonical grants path must remain beneath the canonical grants directory; symlink escapes fail closed. Ward creates the directory with mode `0700` and a new grants file with mode `0600`; replacing an existing grants file preserves its current mode with group/other write bits stripped, rather than always resetting to `0600`. The project ID cannot define or modify grants by itself.
+- Missing `ward.id` or a missing grants file means no persistent project grants. A present but malformed/unreadable ID or grants file fails closed.
+- Grant paths are resolved and canonicalized when loaded. Broken or unresolvable targets fail closed.
+
+Persistent project grants are checked after session denies and before global policy. They may therefore carve an explicit, project-specific exception through an ordinary global deny such as `.pi/`. They never override path-resolution failures, Ward self-protection, or session denies.
+
+No reverse index, project registry, VCS probing, or stale-project cleanup is maintained. The active project's `ward.id` is the complete lookup mechanism.
+
+There is no automatic migration. `<projectRoot>/.pi/ward.json` is no longer loaded, `projectRoot` rules are rejected by the global schema, and users remove or recreate old policy manually.
 
 ### Path Resolution
 
@@ -216,14 +184,13 @@ Before matching, all paths are resolved:
 
 ### Self-Protection
 
-Self-protection must block two distinct things, and neither alone is sufficient:
+Ward protects policy authority by both nominal path and canonical file identity:
 
-1. **Nominal structural paths.** Any path matching the pattern `<dir>/.pi/ward.json` — at any location in the filesystem, including a path that does not yet exist — is always write-protected. This stops the agent from *creating* a new config file at a location it could later load and exploit, not just from modifying an existing one.
-2. **Canonical identity of the configs actually in effect.** The realpath of the global config and the realpath of the project config, both captured once during config loading for the current session, are also always write-protected — regardless of what path is used to reach them. This is necessary because a write tool's target need not textually look like `.pi/ward.json` to end up mutating one of these files: a symlinked `.pi` or `.pi/agent` ancestor directory, or a direct symlink/hardlink alias pointing at the canonical config file, can present a different nominal path while resolving to the same on-disk file.
+1. `~/.pi/agent/ward.json` and every `~/.pi/agent/ward/*.grants.json` are always write-protected from guarded tools, including before creation.
+2. Every path structurally matching `<dir>/.pi/ward.id` is protected from both reads and writes, including before creation. The ID is consumed only by Ward internally.
+3. The canonical device/inode identities of the active global policy, project ID, and grants file are captured when loaded and receive the same protection through symlink or hardlink aliases.
 
-Checking only the final realpath's basename is **not** sufficient on its own — a nominal-path check is still required to catch pre-creation (a not-yet-existing file has no realpath to compare), and a realpath check is still required to catch aliasing of an existing config through symlinked ancestors or direct links. Both checks run on every candidate write target. Together they mean the agent cannot create a new config file at an exploitable location, and cannot weaken its own constraints by modifying any config through its nominal path or any alias that resolves to it. (Deletion/renaming of config files can only happen via bash, which is pi-armory's responsibility.)
-
-**Scope relative to `/ward project`:** the self-protection guarantees above apply to normal, agent-mediated file access — the guarded tools (`read`, `write`, `edit`, `delete`, `move`, and the recursive read tools) as invoked by the model during a session. They do not create, and are not weakened by, any other path to mutating the config files. The `/ward project` command's internal writer (see [`/ward project` Command](#ward-project-command-persistent-project-rules)) is the single sanctioned exception: a ward-internal code path, gated on explicit interactive user confirmation before every write, that mutates the trusted global config directly rather than through the guarded tool layer. It does not pass through, enable, or weaken ordinary tool access to the config files in any way — a model-issued `write`/`edit`/`delete` targeting either config's nominal or canonical path remains blocked exactly as described above, confirmation or no confirmation. `/ward project` is the only sanctioned mutation path for ward's own policy; there is no other route, agent-mediated or otherwise, by which the model or a guarded tool can alter either config file.
+Nominal checks prevent pre-creation attacks; identity checks prevent aliasing attacks. Both are required. The `/ward project` management flow is the only sanctioned writer for `ward.id` and project grant files. It runs internally, never through guarded tools, and requires explicit interactive confirmation for every persistent mutation.
 
 ### Behavior on Block
 
@@ -245,12 +212,12 @@ This is necessarily post-hoc: the tool executes, then ward redacts its result. I
 
 ### Failure Modes
 
-- **Invalid JSON / schema error in any config:** fail-closed. Session refuses to start with a clear error.
-- **Config file unreadable (permissions):** fail-closed.
+- **Invalid JSON / schema error in any config:** fail-closed. The extension remains loaded but enters an explicit fail-closed startup-error state: every guarded file operation is blocked and `/ward` refuses commands with a clear error until the config is repaired and the extension is reloaded or the session restarted.
+- **Config file unreadable (permissions):** fail-closed, same startup-error state as above.
 - **Extension crash during rule evaluation:** fail-closed. The tool call is denied.
 - **Invalid pattern syntax:** fail-closed at load time.
 - **Allow rule structurally out of scope:** load-time error (consistent with fail-closed).
-- **`/ward project` write path (see [Safe write procedure](#ward-project-command-persistent-project-rules)):** a busy/stale lock, the on-disk source having changed since it was read, validation failure of the assembled config, or failure of the atomic replace step are all reported to the user as a failed write — none of these is ever presented as a successful persist.
+- **`/ward project` write path (see [Safe write procedure](#ward-project-command-persistent-project-grants)):** a busy/stale lock, the on-disk source having changed since it was read, validation failure of the assembled grants file, or failure of the atomic replace step are all reported to the user as a failed write — none of these is ever presented as a successful persist.
 - **`/ward project` post-write reload failure:** the disk write itself may have succeeded validly, but if reloading policy into the running session fails, the prior in-memory policy stays active for the rest of the session; the user is told the change is on disk but not yet enforced, and that a restart or manual repair is needed.
 
 ### Threat Model Scope
@@ -295,20 +262,21 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 **Evaluation order (checkPath + handler):**
 
 1. Path resolution (symlink resolve, broken symlink check).
-2. Self-protection check (ward config files are always write-protected).
-3. Check session denies → if match, deny silently. This is a hard block: it overrides rule allows, baseline allows, session grants, and call-scoped approvals, and is checked before rule evaluation.
-4. Rule evaluation (first-match-wins): an allow rule match short-circuits to allow; a deny rule match hard-blocks, no prompt.
-5. If baseline would deny (path outside project root):
+2. Self-protection check.
+3. Check session denies → hard block.
+4. Check the active project's persistent grants → allow on match. This is the explicit exception layer and may override an ordinary global deny.
+5. Evaluate global rules first-match-wins → allow or non-grantable deny.
+6. If baseline would deny (path outside project root):
    a. Check session grants → if match, allow silently.
-   b. For reads only, check prompt-derived approval (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants) below) → if match, allow silently, scoped to the current turn.
+   b. For reads only, check prompt-derived approval → if match, allow for the current turn.
    c. Prompt user → apply their choice.
-6. If baseline would allow (inside project root) → allow.
+7. If baseline would allow (inside project root) → allow.
 
 **Key constraints:**
 
-- Grants are in-memory only — they do not persist across sessions.
-- Grants cannot override explicit deny rules — only baseline denies are grantable.
-- Session denies are the exception: they are always stored (even inside project root, even where a rule or grant would otherwise allow), and always checked first — they override rule allows, baseline allows, session grants, and call-scoped approvals.
+- Interactive and `/ward` session grants are in-memory only. Persistent project grants are separate and managed only through `/ward project`.
+- Session allows cannot override explicit global deny rules; persistent project grants can.
+- Session denies are always stored and checked first. They override global rules, persistent project grants, session grants, baseline allows, and call-scoped approvals.
 - Directory grants (`directory: true`) cover the path and everything under it.
 - Operation semantics mirror rules: a write grant covers read+write; a read deny blocks both.
 - When no UI is available (non-interactive mode), baseline denies remain blocked, except where prompt-derived read approval applies (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants) below) — that check needs no UI, only a real user turn.
@@ -317,7 +285,7 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 
 Interactive approval and `/ward` both require the user to act out-of-band from their request. But often the user's own message already names the path they want read (e.g. "check @/tmp/notes/todo.md") — asking them to also click through a prompt is redundant. Prompt-derived approval treats a concrete matching path reference in the user's own message as consent for that reference, scoped to the turn in which it was made.
 
-**Trigger:** only reached for a read that is otherwise grantable — i.e. baseline-denied (outside project root) with no explicit deny rule and no resolution failure. It sits between session grants/denies and the interactive prompt in the evaluation order. (Self-protection is irrelevant here: it only ever write-protects config files, and this check never covers writes.)
+**Trigger:** only reached for a read that is otherwise grantable — i.e. baseline-denied (outside project root) with no persistent project grant, explicit deny rule, or resolution failure. It sits between session grants and the interactive prompt in the evaluation order. Self-protected paths are rejected before this check.
 
 **Remembered input, not a turn model:** the extension keeps a single in-memory value — the text of the latest genuine user input seen this runtime. "Genuine" means the input arrived via an interactive or RPC source; extension-originated input (e.g. injected by a command or tool) is never genuine — it neither becomes the remembered value nor clears it. Every subsequent genuine input replaces the previous one, so the check always compares against the single most recent genuine message, whatever tool calls have happened since. There is no separate notion of conversation branch or turn boundary tracked beyond this: "current turn" below just means "since the last genuine input was recorded and until the next one arrives".
 
@@ -379,7 +347,7 @@ The interactive approval flow prompts per-file. The `/ward` slash command lets t
 
 - Allows: cannot override explicit deny rules. Only baseline denies are grantable.
 - Denies: always stored, regardless of what a rule or baseline would otherwise decide — including paths inside the project root and paths an explicit rule would allow. A session deny is a hard temporary block for the remainder of the process: it overrides rule allows, baseline allows, session grants, and call-scoped approvals.
-- Directory patterns: trailing `/` covers the path and everything underneath.
+- Directory patterns: an existing directory is detected and granted recursively even without a trailing `/`; a trailing `/` requests directory scope for a path that does not yet exist, covering the path and everything underneath once it does.
 - Operation semantics: `write` implies read+write for allow; for deny, `read` (default) blocks read+write, `write` blocks writes only. Omitting the operation defaults to `read`.
 - Scope is always session — no persistence.
 - Path resolution: `~/` expanded at grant time. Symlinks resolved. Relative paths resolved from project root.
@@ -387,17 +355,15 @@ The interactive approval flow prompts per-file. The `/ward` slash command lets t
 
 **Evaluation order:**
 
-`/ward` grants and denies plug into the same evaluation order described in [Runtime Grants](#runtime-grants-interactive-approval) above — session denies are checked immediately after self-protection, before rule evaluation:
+`/ward` grants and denies plug into the same evaluation order described in [Runtime Grants](#runtime-grants-interactive-approval):
 
 1. Path resolution
 2. Self-protection check
-3. Check session denies → `/ward deny` lives here; hard block, checked first
-4. Rule evaluation (first-match-wins): an allow rule match short-circuits to allow; a deny rule match hard-blocks, no override
-5. Baseline deny?
-   - a. Check session grants → `/ward` grants live here
-   - b. For reads only, check prompt-derived approval (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants)) → turn-scoped, not stored
-   - c. Prompt user (if no grant/deny/approval matches)
-6. Baseline allow → allow
+3. Session deny
+4. Persistent project grant
+5. Global rule evaluation
+6. On baseline deny: session grant, then prompt-derived approval, then interactive prompt
+7. Baseline allow
 
 **`/ward list` output:**
 
@@ -416,76 +382,65 @@ Removes the grant/deny from session state. Future access falls back to baseline 
 
 Reports the evaluation result for a path: which rule or grant applies, what the outcome would be, and why — reflecting the same hard session-deny precedence as the evaluation order above (a session deny always wins, even over an allow rule or grant). Useful for debugging "why was this blocked?"
 
-### `/ward project` Command (Persistent Project Rules)
+### `/ward project` Command (Persistent Project Grants)
 
-Session grants (above) vanish when the session ends. `/ward project` is a separate, deliberately heavier-weight mechanism for a user who wants a rule to survive across sessions for one specific project — e.g. "this project should always be able to read that sibling directory." It writes an explicit, personal, project-scoped policy rule to disk, distinct in kind from session grants: it is authored policy, not a remembered runtime decision.
+`/ward project` manages the active project's allow-only persistent grant file. Users never need to locate or edit the UUID-named file manually.
 
+Direct commands remain available:
+
+```text
+/ward project allow [read|write] <path>
+/ward project list
+/ward project revoke <path>
 ```
-/ward project allow [read|write] <path>   # persist an allow rule for this project
-/ward project deny  [read|write] <path>   # persist a deny rule for this project
-/ward project list                        # show persisted global rules that apply to this project
+
+Running `/ward project` without arguments opens an interactive manager:
+
+```text
+Project grants
+  read   ~/.pi/agent/agents/   directory
+  write  ~/notes/output.md     file
+
+[Add grant] [Revoke grant] [Close]
 ```
 
-**Storage — global config only, projectRoot-conditioned:**
+**Add flow:** select read or write, enter a literal path, resolve it, determine file/directory scope, then show a confirmation containing the normalized path, operation, project-specific scope with a short project ID, and any ordinary global deny the grant will override. The short ID is the prefix of the corresponding grants filename. The first confirmed grant creates both the random project ID and its grants file. Cancellation or absence of an interactive UI leaves disk unchanged.
 
-A persisted rule is appended to the trusted global config's rule list, with a `projectRoot` condition set to the active session's exact canonical project root (same identity used elsewhere by `projectRoot` matching). It is never written to the project-local config — the project config is untrusted and self-authored policy must not live where a cloned repository could carry or tamper with it. This does not introduce a third store: there remain exactly two config files; `/ward project` is a controlled writer for one of them.
+**Revoke flow:** select an existing grant, then confirm its removal. Removing the final grant deletes the empty grants file but retains `ward.id`, so all worktrees keep a stable identity. Revocation affects only persistent project grants; `/ward revoke` remains session-only.
 
-**Path handling:**
+**Path handling:** only literal paths are accepted. `~/` and absolute paths are supported; relative paths are resolved from the project root for command input but persisted canonically as `~/` or absolute paths. An existing directory is detected and granted recursively even without a trailing `/`; a trailing `/` requests directory scope for a path that does not yet exist. Globs and wildcards are rejected.
 
-Only literal paths are accepted — same trailing-slash directory semantics as `/ward` (a trailing `/` covers the path and everything beneath it). No globs, no wildcards. The target path and the project root are canonicalized using the same resolution rules used when loading policy (absolute, symlinks resolved). When writing the rule, prefer expressing the target and the project-root condition in `~/`-relative form if that form's canonical identity is equivalent to the resolved path; otherwise fall back to the absolute canonical form.
+**Override semantics:** a persistent project grant is an explicit trusted exception. The confirmation UI must clearly name an ordinary global deny it overrides. It cannot target a self-protected path, override a session deny, or bypass path-resolution failure. Duplicate grants are rejected; a broader existing grant is shown instead of adding a redundant entry.
 
-**Confirmation is the persistence boundary:**
+**Safe write procedure:** reads and validates the current grants file, acquires an exclusive fail-fast lock for that file, verifies the source did not change, validates the proposed complete file, writes a sibling temporary file, and atomically replaces the destination while preserving restrictive permissions. Creating `ward.id` and the first grants file is ordered so an interruption can leave at worst an unused ID or an orphaned grants file, never a partially valid authority file. Stale locks require manual removal.
 
-Writing to disk always requires an explicit interactive UI confirmation, shown before anything is written, displaying: the exact effect (allow/deny), the operation (read/write), the normalized target pattern, the project-root condition it will be scoped to, and the destination config. If no UI is available (headless/non-interactive), the command refuses outright and makes no change. This confirmation is intentionally separate from — and not triggered by — the ordinary runtime approval prompts described above; those grant session-only, in-memory access and never cause a disk write. Only this explicit `/ward project` confirmation can persist a rule.
-
-**Ordering and shadowing:**
-
-New rules are appended after all existing global rules — existing rules are never reordered. The checks below are evaluated against a freshly read and validated global config snapshot, obtained while holding the cooperative writer lock (see Safe write procedure), combined with the project rules currently loaded for this session — never against a global rule set cached from session start, which may be stale by the time of the write. If the on-disk global config changes between that snapshot and the atomic replace, the write aborts and is reported rather than proceeding against a snapshot known to be out of date; the rule list otherwise remains strictly append-only.
-
-Before writing, the candidate rule is evaluated as if already appended at that trailing position against this snapshot plus the currently loaded project rules: if an earlier global rule would already match the same target and take precedence (shadowing the new rule), the write is rejected and nothing is persisted.
-
-A persistent `allow` is additionally refused if the currently loaded effective policy already resolves the target to an explicit deny — including a project-config deny — rather than silently overriding it; the user must resolve that conflict by hand (e.g. editing the project config) rather than have `/ward project allow` paper over it. This refusal is a command-time UX safety policy only, not a change to runtime evaluation: runtime policy remains global-first as described throughout this design, so a hand-authored global `allow` for the same target would still take precedence over a project-config deny at runtime regardless of this command declining to add one on the user's behalf.
-
-A persistent `deny`, by contrast, may freely supersede a later project-config rule for the same target, because the global config already has unconditional precedence over the project config by design. If the target currently matches a project-config `allow` (or other project rule) that the persistent deny will supersede, the confirmation prompt (see "Confirmation is the persistence boundary", above) explicitly surfaces that override — naming the currently-matching project rule and stating that the new global deny will take precedence over it — rather than persisting the change silently.
-
-**`/ward project list`:**
-
-Lists global rules whose `projectRoot` condition includes the active session's canonical project root — including rules that were hand-authored directly in the global config rather than written by this command. It is read-only and never mutates the config.
-
-**Safe write procedure:**
-
-Persisting a rule follows a careful update sequence so a crash or a concurrent ward-originated writer cannot corrupt the trusted global config: validate the config currently on disk; acquire an exclusive lock scoped to ward-originated writers and, if it is already held, fail immediately rather than wait; re-check that the on-disk content has not changed since it was read; validate the fully assembled proposed config (existing rules plus the new one); write the complete new config to a temporary file in the same directory, then atomically replace the original; preserve the original's restrictive file permissions on the replacement. If any step before the atomic replace fails, the original file is left untouched. A lock left behind by a crashed writer does not self-expire; recovery is manual (removing the stale lock) rather than an automatic timeout or takeover — this is deliberately simple rather than a general-purpose lock-recovery protocol. A non-cooperating external process writing to the same file outside this procedure remains out of scope, consistent with the existing external-process/TOCTOU boundary above.
-
-**Reload after write:**
-
-On a successful write, ward reloads the complete policy (both configs) for the current session so the new rule takes effect immediately where possible. If reload fails, the session keeps its previous in-memory policy running, and the user is told that the change was persisted to disk but requires a restart or manual repair to take effect — the command never claims the new rule is enforced immediately when reload did not succeed.
-
-**Removal (initial scope):**
-
-There is no `/ward project revoke` initially. Removing a persisted rule is manual: edit the global config directly. Persisted rules carry no managed identifier or provenance marker distinguishing command-written rules from hand-authored ones, and there is no cleanup pass for rules whose `projectRoot` no longer corresponds to an existing project (e.g. after a project directory moves) — `/ward project list` is the intended aid for a user auditing what is currently active for a project before editing the config by hand.
+**Reload after write:** after a successful add or revoke, Ward reloads the active grants file. If reload fails, the prior in-memory grants remain active and the UI reports that the disk change requires restart or repair.
 
 ## Non-Goals
 
 - **Bash command filtering** — pi-armory's responsibility.
 - **Network access control** — out of scope.
-- **Per-model or per-session rules** — single policy per directory tree.
+- **Per-model policy** — one global policy and one active project grant set apply to the session.
 - **Audit logging** — the TUI already shows blocked tool calls.
-- **Overriding global rules from project config** — intentional. If a global deny is too broad, adjust the global config.
-- **Recursive wildcards** — no `**` support. A directory pattern (`dir/`) covers the recursive case for access control purposes.
-- **Per-project config store** — there are exactly two config files (global, project). No third, per-project store of grants; personal per-project scoping is expressed via a `projectRoot`-conditioned rule in the trusted global config instead.
-- **Trust-on-first-use, signatures, or hashing** — configs are trusted or untrusted purely by which of the two fixed locations they were loaded from, never by verifying their content against a prior fingerprint.
-- **Persistent approval database** — session grants (interactive approval, `/ward`, prompt-derived approval) are in-memory only and never written to disk across sessions. `/ward project` (above) is not an exception to this: it is not a general approval database either — it writes explicit, user-confirmed policy rules into the trusted global config, conditioned on the active project root, and never persists ordinary `/ward` session grants or ordinary interactive approval-prompt decisions; those remain in-memory only, exactly as described above.
+- **Project-local policy** — `<projectRoot>/.pi/ward.json` is unsupported. Projects carry only an opaque local identity; authority remains under `~/.pi/agent/`.
+- **Persistent project denies** — project files are allow-only. Put persistent denies in global policy or use session denies.
+- **VCS identity discovery** — no Git/Jujutsu subprocesses, repository-root hashes, remote URLs, or commit-derived IDs.
+- **Project registry and cleanup** — no reverse index or automatic garbage collection of orphaned grants files.
+- **Recursive wildcards** — no `**` support. A directory path covers the recursive case.
+- **Automatic persistence of runtime approval** — interactive approval, prompt-derived approval, and `/ward allow` remain session/turn scoped. Only `/ward project` persists.
 
 ## Key Invariants
 
-1. A blocked operation never touches the filesystem.
-2. Symlinks cannot bypass rules — real paths are always resolved.
+1. A blocked operation never touches the filesystem, except the documented post-execution nature of recursive-read filtering.
+2. Symlinks cannot bypass rules or grants — real paths are always resolved.
 3. Paths outside the project root are denied by default.
-4. A config can only allow access at or below its own directory (enforced at match time).
-5. Ward config files are always write-protected — by nominal `.pi/ward.json` structural path (including at creation) and by the canonical (realpath) identity of the configs actually loaded for the session, so symlinked ancestors or aliases cannot bypass the protection.
-6. The project config is untrusted (it may ship inside a cloned repository): it can express policy within its own project root but can never expand authority beyond it or override/weaken a global rule.
-7. Rules are pure data (JSON) — no executable logic in config.
-8. Any config error fails closed — never fails open.
-9. An empty or missing config results in the baseline policy (project-internal allowed, external denied).
-10. Recursive read tools (`grep`; `find`/`ls` planned) execute, but result lines/entries attributable to a denied path are redacted from the output before the model sees them, fail-closed (unattributable output is dropped).
-11. Ward's guarantees cover operations mediated through its guarded tools; actions taken outside that mediation (bash, external processes) are outside its boundary.
+4. The sole declarative policy file is the trusted global `~/.pi/agent/ward.json`; projects cannot supply policy.
+5. Persistent project grants are allow-only, stored under `~/.pi/agent/ward/`, and selected by a random local project ID.
+6. A project ID carries no authoring authority: it can select only the already-existing trusted grants file with that exact ID.
+7. Persistent project grants may override ordinary global denies, but never resolution failures, self-protection, or session denies.
+8. Global policy and grants files are write-protected from guarded tools. `.pi/ward.id` is protected from both reads and writes, including before creation; canonical identity checks prevent alias bypasses.
+9. Rules and grants are pure data — no executable logic.
+10. Any active policy, identity, or grants-file error fails closed.
+11. Missing policy or grants result in baseline behavior: project-internal access allowed, external access denied.
+12. Recursive read tools (`grep`; `find`/`ls` planned) execute, but result lines/entries attributable to a denied path are redacted before the model sees them, fail-closed.
+13. Ward's guarantees cover operations mediated through its guarded tools; bash and external processes remain outside its boundary.

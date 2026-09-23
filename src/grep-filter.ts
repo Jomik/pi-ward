@@ -2,7 +2,9 @@ import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { GrantStore } from "./grants.js";
 import { checkPath } from "./guard.js";
+import type { ParsedGrant } from "./project-grants.js";
 import type { ParsedRule } from "./rules.js";
+import type { ProtectedIdentity } from "./self-protect.js";
 
 /**
  * Regex to find ALL potential split points in a grep output line.
@@ -63,6 +65,14 @@ export interface FilterGrepOutputResult {
  *                     deny, but explicit rule denies and session denies still
  *                     win. Scope is limited to this single filtering pass —
  *                     callers must not persist it across calls.
+ * @param projectGrants Optional active project's persistent grants, checked
+ *                     with the same precedence as `checkPath` (after session
+ *                     denies, before rule evaluation).
+ * @param protectedIdentities Optional identities of currently-active ward
+ *                     config/identity/grants files, so a hardlink or
+ *                     non-structural alias of a protected identity (e.g.
+ *                     `ward.id`) is still blocked, matching `checkPath`'s
+ *                     self-protection precedence.
  *
  *
  * **TOCTOU limitation:** this filter stat-verifies candidate paths *after* grep
@@ -80,6 +90,8 @@ export async function filterGrepOutput(
   projectRoot: string,
   grants?: GrantStore,
   approvedRoot?: string,
+  projectGrants?: ParsedGrant[],
+  protectedIdentities?: ProtectedIdentity[],
 ): Promise<FilterGrepOutputResult> {
   const lines = text.split("\n");
 
@@ -115,7 +127,17 @@ export async function filterGrepOutput(
       // biome-ignore lint/style/noNonNullAssertion: cache.has guarantees presence
       return allowCache.get(absPath)!;
     }
-    const result = await checkPath("grep", absPath, "read", rules, projectRoot, grants, approvedRoot);
+    const result = await checkPath(
+      "grep",
+      absPath,
+      "read",
+      rules,
+      projectRoot,
+      grants,
+      approvedRoot,
+      protectedIdentities,
+      projectGrants,
+    );
     allowCache.set(absPath, result.allowed);
     return result.allowed;
   }

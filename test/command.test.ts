@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { wardCommandHandler } from "../src/command.js";
 import { GrantStore } from "../src/grants.js";
 import { parsePattern } from "../src/pattern.js";
+import type { ParsedGrant } from "../src/project-grants.js";
 import type { ParsedRule } from "../src/rules.js";
 import type { ProtectedIdentity } from "../src/self-protect.js";
 
@@ -77,9 +78,10 @@ async function run(
   grants: GrantStore,
   rules: ParsedRule[] = [],
   protectedIdentities: ProtectedIdentity[] = [],
+  projectGrants: ParsedGrant[] = [],
 ) {
   const ctx = makeCtx();
-  await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants, protectedIdentities });
+  await wardCommandHandler(args, ctx, { rules, projectRoot, homeDir, grants, protectedIdentities, projectGrants });
   return ctx.notifications;
 }
 
@@ -220,8 +222,8 @@ describe("/ward allow", () => {
     const store = new GrantStore();
     const protectedPiDir = join(outsideDir, ".pi");
     await mkdir(protectedPiDir, { recursive: true });
-    const protectedFile = join(protectedPiDir, "ward.json");
-    await writeFile(protectedFile, "{}");
+    const protectedFile = join(protectedPiDir, "ward.id");
+    await writeFile(protectedFile, "550e8400-e29b-41d4-a716-446655440000");
     const notes = await run(`allow write ${protectedFile}`, store);
     expect(notes[0]?.type).toBe("warning");
     expect(notes[0]?.message).toMatch(/ward config file/);
@@ -241,6 +243,19 @@ describe("/ward allow", () => {
     await link(activeConfig, alias);
 
     const notes = await run(`allow write ${alias}`, store, [], protectedIdentities);
+    expect(notes[0]?.type).toBe("warning");
+    expect(notes[0]?.message).toMatch(/ward config file/);
+    expect(store.listAllows()).toHaveLength(0);
+  });
+
+  it("rejects a read grant targeting ward.id (self-protection blocks reads regardless of operation)", async () => {
+    const store = new GrantStore();
+    const piDir = join(projectRoot, ".pi");
+    await mkdir(piDir, { recursive: true });
+    const wardId = join(piDir, "ward.id");
+    await writeFile(wardId, "some-identity");
+
+    const notes = await run(`allow read ${wardId}`, store);
     expect(notes[0]?.type).toBe("warning");
     expect(notes[0]?.message).toMatch(/ward config file/);
     expect(store.listAllows()).toHaveLength(0);
@@ -542,6 +557,19 @@ describe("/ward status", () => {
     expect(msg).toMatch(/denied by session deny/);
   });
 
+  it("reports a persistent project grant that overrides a global deny rule", async () => {
+    const file = join(outsideDir, "shared.txt");
+    await writeFile(file, "x");
+    const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+    const rules = [makeRule("shared.txt", "deny", outsideDir)];
+    const projectGrants: ParsedGrant[] = [{ resolvedPath: resolvedFile, operations: "read", directory: false }];
+
+    const notes = await run(`status ${file}`, store, rules, [], projectGrants);
+    const msg = notes[0]?.message ?? "";
+    expect(msg).toMatch(/read: allowed by persistent project grant/);
+  });
+
   it("reports project-local read deny before baseline allow (both operations denied)", async () => {
     const file = join(projectRoot, "src", "index.ts");
     await mkdir(join(projectRoot, "src"), { recursive: true });
@@ -601,8 +629,8 @@ describe("/ward status", () => {
     const store = new GrantStore();
     const piDir = join(projectRoot, ".pi");
     await mkdir(piDir, { recursive: true });
-    const file = join(piDir, "ward.json");
-    await writeFile(file, "{}");
+    const file = join(piDir, "ward.id");
+    await writeFile(file, "550e8400-e29b-41d4-a716-446655440000");
     const notes = await run(`status ${file}`, store);
     const msg = notes[0]?.message ?? "";
     expect(msg).toMatch(/write: denied \(ward config file/);
@@ -648,18 +676,33 @@ describe("/ward status", () => {
 // /ward project
 // ---------------------------------------------------------------------------
 
-function globalConfigFile(): string {
-  return join(homeDir, ".pi", "agent", "ward.json");
+function projectIdFile(): string {
+  return join(projectRoot, ".pi", "ward.id");
 }
 
-async function writeGlobalConfig(content: unknown): Promise<void> {
-  await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
-  await writeFile(globalConfigFile(), JSON.stringify(content), "utf-8");
+function grantsFileFor(id: string): string {
+  return join(homeDir, ".pi", "agent", "ward", `${id}.grants.json`);
 }
+
+async function readProjectIdFile(): Promise<string | null> {
+  try {
+    return (await readFile(projectIdFile(), "utf-8")).trim();
+  } catch {
+    return null;
+  }
+}
+
+type SelectImpl = (message: string, options: string[]) => string | undefined | Promise<string | undefined>;
+type InputImpl = (title: string, placeholder?: string) => string | undefined | Promise<string | undefined>;
 
 interface ProjectRunOpts {
   hasUI?: boolean;
+  confirmResult?: boolean;
   selectResult?: string | undefined;
+  selectSequence?: Array<string | undefined>;
+  selectImpl?: SelectImpl;
+  inputSequence?: Array<string | undefined>;
+  inputImpl?: InputImpl;
   rules?: ParsedRule[];
   protectedIdentities?: ProtectedIdentity[];
   reloadPolicy?: () => Promise<{ ok: true } | { ok: false; reason: string }>;
@@ -668,9 +711,15 @@ interface ProjectRunOpts {
 function makeProjectCtx(opts: ProjectRunOpts) {
   const notifications: Notification[] = [];
   const selectCalls: Array<{ message: string; options: string[] }> = [];
+  const confirmCalls: Array<{ title: string; message: string }> = [];
+  const inputCalls: Array<{ title: string; placeholder?: string }> = [];
+  let selectIdx = 0;
+  let inputIdx = 0;
   return {
     notifications,
     selectCalls,
+    confirmCalls,
+    inputCalls,
     hasUI: opts.hasUI ?? true,
     ui: {
       notify(message: string, type?: "info" | "warning" | "error") {
@@ -678,7 +727,19 @@ function makeProjectCtx(opts: ProjectRunOpts) {
       },
       select: async (message: string, options: string[]) => {
         selectCalls.push({ message, options });
-        return opts.selectResult ?? "Persist";
+        if (opts.selectImpl) return opts.selectImpl(message, options);
+        if (opts.selectSequence) return opts.selectSequence[selectIdx++];
+        return opts.selectResult;
+      },
+      confirm: async (title: string, message: string) => {
+        confirmCalls.push({ title, message });
+        return opts.confirmResult ?? true;
+      },
+      input: async (title: string, placeholder?: string) => {
+        inputCalls.push({ title, placeholder });
+        if (opts.inputImpl) return opts.inputImpl(title, placeholder);
+        if (opts.inputSequence) return opts.inputSequence[inputIdx++];
+        return undefined;
       },
     },
   };
@@ -698,76 +759,75 @@ async function runProject(args: string, opts: ProjectRunOpts = {}) {
   return ctx;
 }
 
-describe("/ward project allow|deny", () => {
-  it("persists an allow rule after confirmation and reports success", async () => {
+describe("/ward project allow (direct)", () => {
+  it("persists an allow grant after confirmation, lazily creating ward.id, and reports success", async () => {
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "hello");
     const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
 
-    const ctx = await runProject(`project allow ${file}`, { selectResult: "Persist", reloadPolicy });
+    const ctx = await runProject(`project allow ${file}`, { reloadPolicy });
 
     expect(ctx.notifications.at(-1)?.type).toBe("info");
-    expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted allow read rule/);
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted read grant/);
     expect(ctx.notifications.at(-1)?.message).toMatch(/reloaded/i);
     expect(reloadPolicy).toHaveBeenCalledOnce();
 
-    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
-    expect(written.rules).toHaveLength(1);
-    expect(written.rules[0]).toMatchObject({ effect: "allow", operations: "read" });
+    const id = await readProjectIdFile();
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    const written = JSON.parse(await readFile(grantsFileFor(id as string), "utf-8"));
+    expect(written.grants).toHaveLength(1);
+    expect(written.grants[0]).toMatchObject({ operations: "read" });
   });
 
-  it("persists a write rule when 'write' operation is specified", async () => {
+  it("persists a write grant when 'write' is specified", async () => {
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "hello");
 
-    await runProject(`project allow write ${file}`, { selectResult: "Persist" });
+    await runProject(`project allow write ${file}`);
 
-    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
-    expect(written.rules[0]).toMatchObject({ effect: "allow", operations: "write" });
+    const id = await readProjectIdFile();
+    const written = JSON.parse(await readFile(grantsFileFor(id as string), "utf-8"));
+    expect(written.grants[0]).toMatchObject({ operations: "write" });
   });
 
-  it("persists a deny rule after confirmation", async () => {
-    const file = join(outsideDir, "secret.txt");
-    await writeFile(file, "data");
-
-    const ctx = await runProject(`project deny ${file}`, { selectResult: "Persist" });
-
-    expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted deny read rule/);
-    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
-    expect(written.rules[0]).toMatchObject({ effect: "deny", operations: "read" });
-  });
-
-  it("shows an exact preview and writes nothing when the user cancels", async () => {
+  it("shows a concise exact preview and writes nothing when cancelled", async () => {
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "hello");
 
-    const ctx = await runProject(`project allow ${file}`, { selectResult: "Cancel" });
+    const ctx = await runProject(`project allow ${file}`, { confirmResult: false });
 
-    expect(ctx.selectCalls).toHaveLength(1);
-    expect(ctx.selectCalls[0]?.options).toEqual(["Cancel", "Persist"]);
-    const msg = ctx.selectCalls[0]?.message ?? "";
-    expect(msg).toMatch(/Persist ward policy change/);
-    expect(msg).toMatch(/effect: allow/);
-    expect(msg).toMatch(/operation: read/);
-    expect(msg).toMatch(/pattern: /);
-    expect(msg).toMatch(/projectRoot condition: /);
-    expect(msg).toMatch(/destination: /);
+    expect(ctx.confirmCalls).toHaveLength(1);
+    expect(ctx.confirmCalls[0]?.title).toBe("Add project grant?");
+    const msg = ctx.confirmCalls[0]?.message ?? "";
+    expect(msg).toMatch(/^read .*notes\.txt \(file\)\nscope: this project \(id: [0-9a-f]{8}\)$/);
     expect(ctx.notifications.at(-1)?.type).toBe("info");
     expect(ctx.notifications.at(-1)?.message).toMatch(/Cancelled/);
-    await expect(readFile(globalConfigFile(), "utf-8")).rejects.toThrow();
+    expect(await readProjectIdFile()).toBeNull();
   });
 
-  it("refuses to persist without an interactive UI, but list still works", async () => {
+  it("previews the short existing project id without recreating it", async () => {
+    await mkdir(join(projectRoot, ".pi"), { recursive: true });
+    const existingId = "550e8400-e29b-41d4-a716-446655440000";
+    await writeFile(projectIdFile(), existingId, "utf-8");
+
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+
+    const ctx = await runProject(`project allow ${file}`, { confirmResult: false });
+
+    const msg = ctx.confirmCalls[0]?.message ?? "";
+    expect(msg).toContain(`scope: this project (id: ${existingId.slice(0, 8)})`);
+    expect(await readProjectIdFile()).toBe(existingId);
+  });
+
+  it("refuses to persist without an interactive UI (headless)", async () => {
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "hello");
 
     const ctx = await runProject(`project allow ${file}`, { hasUI: false });
     expect(ctx.notifications[0]?.type).toBe("warning");
     expect(ctx.notifications[0]?.message).toMatch(/interactive session/);
-    await expect(readFile(globalConfigFile(), "utf-8")).rejects.toThrow();
-
-    const listCtx = await runProject("project list", { hasUI: false });
-    expect(listCtx.notifications[0]?.type).toBe("info");
+    expect(await readProjectIdFile()).toBeNull();
   });
 
   it("shows usage when no path is given", async () => {
@@ -779,7 +839,7 @@ describe("/ward project allow|deny", () => {
   it("rejects glob characters in path", async () => {
     const ctx = await runProject("project allow ~/foo/*.ts");
     expect(ctx.notifications[0]?.type).toBe("warning");
-    expect(ctx.notifications[0]?.message).toMatch(/Glob patterns are not supported/);
+    expect(ctx.notifications[0]?.message).toMatch(/glob/i);
   });
 
   it("rejects unresolvable paths (broken symlink)", async () => {
@@ -788,54 +848,73 @@ describe("/ward project allow|deny", () => {
 
     const ctx = await runProject(`project allow ${broken}`);
     expect(ctx.notifications[0]?.type).toBe("warning");
-    expect(ctx.notifications[0]?.message).toMatch(/Cannot resolve path/);
+    expect(ctx.notifications[0]?.message).toMatch(/cannot be resolved/i);
   });
 
-  it("rejects a write rule targeting a self-protected config path", async () => {
+  it("rejects a self-protected target", async () => {
     const protectedDir = join(outsideDir, ".pi");
     await mkdir(protectedDir, { recursive: true });
-    const protectedFile = join(protectedDir, "ward.json");
-    await writeFile(protectedFile, "{}");
+    const protectedFile = join(protectedDir, "ward.id");
+    await writeFile(protectedFile, "550e8400-e29b-41d4-a716-446655440000");
 
     const ctx = await runProject(`project allow write ${protectedFile}`);
     expect(ctx.notifications[0]?.type).toBe("warning");
-    expect(ctx.notifications[0]?.message).toMatch(/write-protected/);
+    expect(ctx.notifications[0]?.message).toMatch(/protected/i);
   });
 
-  it("rejects when the candidate would be shadowed by an existing global rule", async () => {
-    await writeGlobalConfig({ rules: [{ pattern: "~/outside/", effect: "allow" }] });
+  it("discloses (without blocking) an ordinary global deny rule it overrides", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    const globalDenyRule = makeRule("notes.txt", "deny", outsideDir);
+    const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
+
+    const ctx = await runProject(`project allow ${file}`, { rules: [globalDenyRule], reloadPolicy });
+
+    expect(ctx.confirmCalls[0]?.message).toMatch(/overrides: global deny "notes\.txt"/);
+    expect(ctx.notifications.at(-1)?.type).toBe("info");
+    const id = await readProjectIdFile();
+    const written = JSON.parse(await readFile(grantsFileFor(id as string), "utf-8"));
+    expect(written.grants).toHaveLength(1);
+  });
+
+  it("rejects an exact duplicate persistent grant", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    await runProject(`project allow ${file}`);
+
+    const ctx = await runProject(`project allow ${file}`);
+    expect(ctx.notifications.at(-1)?.type).toBe("warning");
+    expect(ctx.notifications.at(-1)?.message).toMatch(/already granted/i);
+  });
+
+  it("rejects a target already covered by a broader existing directory grant", async () => {
+    await runProject(`project allow write ${outsideDir}/`);
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "hi");
 
     const ctx = await runProject(`project allow ${file}`);
-    expect(ctx.notifications[0]?.type).toBe("warning");
-    expect(ctx.notifications[0]?.message).toMatch(/shadowed by an earlier global rule/);
+    expect(ctx.notifications.at(-1)?.type).toBe("warning");
+    expect(ctx.notifications.at(-1)?.message).toMatch(/broader existing persistent grant/i);
   });
 
-  it("rejects persisting an allow when an explicit deny rule already governs the path", async () => {
-    const file = join(outsideDir, "notes.txt");
-    await writeFile(file, "hi");
-    const projectDenyRule = makeRule("notes.txt", "deny", projectRoot);
+  it("does not reject a new recursive directory grant when a file grant exists at the same resolved path", async () => {
+    const target = join(outsideDir, "leaf");
+    await writeFile(target, "hi");
+    await runProject(`project allow ${target}`);
 
-    const ctx = await runProject(`project allow ${file}`, { rules: [projectDenyRule] });
-    expect(ctx.notifications[0]?.type).toBe("warning");
-    expect(ctx.notifications[0]?.message).toMatch(/explicit deny rule/);
-  });
-
-  it("discloses (without blocking) a project rule that a persisted deny would supersede", async () => {
-    const file = join(outsideDir, "notes.txt");
-    await writeFile(file, "hi");
-    const projectRule = makeRule("notes.txt", "deny", projectRoot);
+    // Simulate the path changing from a file to a directory (e.g. recreated as a dir).
+    await rm(target);
+    await mkdir(target);
+    const inner = join(target, "child.txt");
+    await writeFile(inner, "child");
 
     const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
-    const ctx = await runProject(`project deny ${file}`, {
-      selectResult: "Persist",
-      rules: [projectRule],
-      reloadPolicy,
-    });
+    const ctx = await runProject(`project allow write ${target}/`, { reloadPolicy });
 
-    expect(ctx.selectCalls[0]?.message).toMatch(/supersede/);
-    expect(ctx.notifications.at(-1)?.type).toBe("info");
+    expect(ctx.notifications.at(-1)?.type).not.toBe("warning");
+    const id = await readProjectIdFile();
+    const written = JSON.parse(await readFile(grantsFileFor(id as string), "utf-8"));
+    expect(written.grants).toHaveLength(2);
   });
 
   it("reports a persistence success with a reload-failure fallback message", async () => {
@@ -843,122 +922,24 @@ describe("/ward project allow|deny", () => {
     await writeFile(file, "hello");
     const reloadPolicy = vi.fn(async () => ({ ok: false as const, reason: "boom" }));
 
-    const ctx = await runProject(`project allow ${file}`, { selectResult: "Persist", reloadPolicy });
+    const ctx = await runProject(`project allow ${file}`, { reloadPolicy });
 
     expect(ctx.notifications.at(-1)?.type).toBe("warning");
-    expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted allow read rule/);
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted read grant/);
     expect(ctx.notifications.at(-1)?.message).toMatch(/boom/);
     expect(ctx.notifications.at(-1)?.message).toMatch(/restart to apply/);
 
-    // The disk write itself succeeded despite the reload failure.
-    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
-    expect(written.rules).toHaveLength(1);
-  });
-});
-
-describe("/ward project list", () => {
-  it("reports no persisted rules when the global config is empty", async () => {
-    const ctx = await runProject("project list");
-    expect(ctx.notifications[0]?.type).toBe("info");
-    expect(ctx.notifications[0]?.message).toMatch(/No persisted rules/);
+    const id = await readProjectIdFile();
+    const written = JSON.parse(await readFile(grantsFileFor(id as string), "utf-8"));
+    expect(written.grants).toHaveLength(1);
   });
 
-  it("lists only rules scoped to the active project, filtering out other projects' rules", async () => {
-    const otherProject = join(tempDir, "other-project");
-    await mkdir(otherProject, { recursive: true });
-
-    await writeGlobalConfig({
-      rules: [
-        { pattern: "~/outside/mine.txt", effect: "allow", operations: "read", projectRoot },
-        { pattern: "~/outside/theirs.txt", effect: "deny", operations: "read", projectRoot: otherProject },
-      ],
-    });
-
-    const ctx = await runProject("project list");
-    const msg = ctx.notifications[0]?.message ?? "";
-    expect(msg).toMatch(/mine\.txt/);
-    expect(msg).not.toMatch(/theirs\.txt/);
-  });
-
-  it("does not mutate anything and never asks for confirmation", async () => {
-    await writeGlobalConfig({ rules: [{ pattern: "~/outside/mine.txt", effect: "allow", projectRoot }] });
-    const before = await readFile(globalConfigFile(), "utf-8");
-
-    const ctx = await runProject("project list", { selectResult: "Cancel" });
-
-    expect(ctx.selectCalls).toHaveLength(0);
-    const after = await readFile(globalConfigFile(), "utf-8");
-    expect(after).toBe(before);
-  });
-});
-
-describe("/ward project unknown subcommand", () => {
-  it("shows project usage for an unrecognised subcommand", async () => {
-    const ctx = await runProject("project bogus");
-    expect(ctx.notifications[0]?.type).toBe("warning");
-    expect(ctx.notifications[0]?.message).toMatch(/Usage: \/ward project/);
-  });
-});
-
-describe("/ward project path parsing (whitespace preservation)", () => {
-  it("persists a path with repeated internal spaces exactly", async () => {
-    const dirWithSpaces = join(outsideDir, "my  dir");
-    await mkdir(dirWithSpaces, { recursive: true });
-    const file = join(dirWithSpaces, "a  b.txt");
-    await writeFile(file, "hello");
-
-    const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
-    const ctx = await runProject(`project allow ${file}`, { selectResult: "Persist", reloadPolicy });
-
-    expect(ctx.notifications.at(-1)?.type).toBe("info");
-    const written = JSON.parse(await readFile(globalConfigFile(), "utf-8"));
-    expect(written.rules).toHaveLength(1);
-    expect(written.rules[0].pattern).toMatch(/my {2}dir\/a {2}b\.txt$/);
-  });
-});
-
-describe("/ward project malformed global config handling", () => {
-  it("surfaces a warning (without throwing) for mutation when the global config is invalid JSON", async () => {
-    await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
-    await writeFile(globalConfigFile(), "{ not valid json", "utf-8");
-    const file = join(outsideDir, "notes.txt");
-    await writeFile(file, "hello");
-
-    const ctx = await runProject(`project allow ${file}`);
-
-    expect(ctx.notifications[0]?.type).toBe("warning");
-    expect(ctx.notifications[0]?.message).toMatch(/Invalid JSON/);
-  });
-
-  it("surfaces a warning (without throwing) for mutation when the global config fails schema validation", async () => {
-    await writeGlobalConfig({ rules: [{ pattern: 123, effect: "allow" }] });
-    const file = join(outsideDir, "notes.txt");
-    await writeFile(file, "hello");
-
-    const ctx = await runProject(`project allow ${file}`);
-
-    expect(ctx.notifications[0]?.type).toBe("warning");
-    expect(ctx.notifications[0]?.message).toMatch(/schema validation failed|instancePath|must be/i);
-  });
-
-  it("surfaces a warning (without throwing) for list when the global config is invalid JSON", async () => {
-    await mkdir(join(homeDir, ".pi", "agent"), { recursive: true });
-    await writeFile(globalConfigFile(), "{ not valid json", "utf-8");
-
-    const ctx = await runProject("project list");
-
-    expect(ctx.notifications[0]?.type).toBe("warning");
-    expect(ctx.notifications[0]?.message).toMatch(/Invalid JSON/);
-  });
-});
-
-describe("/ward project confirm failure", () => {
   it("reports a warning and writes nothing when confirm throws", async () => {
     const file = join(outsideDir, "notes.txt");
     await writeFile(file, "hello");
 
     const ctx = makeProjectCtx({});
-    ctx.ui.select = vi.fn(async () => {
+    ctx.ui.confirm = vi.fn(async () => {
       throw new Error("confirm boom");
     });
     const grants = new GrantStore();
@@ -973,7 +954,236 @@ describe("/ward project confirm failure", () => {
 
     expect(ctx.notifications.at(-1)?.type).toBe("warning");
     expect(ctx.notifications.at(-1)?.message).toMatch(/Confirmation failed/);
-    await expect(readFile(globalConfigFile(), "utf-8")).rejects.toThrow();
+    expect(await readProjectIdFile()).toBeNull();
+  });
+});
+
+describe("/ward project revoke (direct)", () => {
+  it("removes a persistent grant after confirmation and reports success", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    await runProject(`project allow ${file}`);
+    const reloadPolicy = vi.fn(async () => ({ ok: true as const }));
+
+    const ctx = await runProject(`project revoke ${file}`, { reloadPolicy });
+
+    expect(ctx.notifications.at(-1)?.type).toBe("info");
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Revoked persistent grant/);
+    expect(reloadPolicy).toHaveBeenCalledOnce();
+  });
+
+  it("deletes the grants file (retaining ward.id) when revoking the final grant", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    await runProject(`project allow ${file}`);
+    const id = await readProjectIdFile();
+
+    await runProject(`project revoke ${file}`);
+
+    await expect(readFile(grantsFileFor(id as string), "utf-8")).rejects.toThrow();
+    expect(await readProjectIdFile()).toBe(id);
+  });
+
+  it("keeps remaining grants when revoking one of several", async () => {
+    const file1 = join(outsideDir, "a.txt");
+    const file2 = join(outsideDir, "b.txt");
+    await writeFile(file1, "1");
+    await writeFile(file2, "2");
+    await runProject(`project allow ${file1}`);
+    await runProject(`project allow ${file2}`);
+    const id = await readProjectIdFile();
+
+    await runProject(`project revoke ${file1}`);
+
+    const written = JSON.parse(await readFile(grantsFileFor(id as string), "utf-8"));
+    expect(written.grants).toHaveLength(1);
+  });
+
+  it("shows a preview and writes nothing when cancelled", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    await runProject(`project allow ${file}`);
+    const id = await readProjectIdFile();
+
+    const ctx = await runProject(`project revoke ${file}`, { confirmResult: false });
+
+    expect(ctx.confirmCalls).toHaveLength(1);
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Cancelled/);
+    const written = JSON.parse(await readFile(grantsFileFor(id as string), "utf-8"));
+    expect(written.grants).toHaveLength(1);
+  });
+
+  it("reports no grant found when nothing matches", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+
+    const ctx = await runProject(`project revoke ${file}`);
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/No persistent project grant found/);
+  });
+
+  it("shows usage when no path given", async () => {
+    const ctx = await runProject("project revoke");
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/Usage: \/ward project revoke/);
+  });
+
+  it("reports an accurate message and writes nothing when ward.id is malformed", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    await mkdir(join(projectRoot, ".pi"), { recursive: true });
+    await writeFile(projectIdFile(), "not-a-uuid", "utf-8");
+
+    const ctx = await runProject(`project revoke ${file}`);
+
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/^Cannot read project grant state:/);
+    expect(await readFile(projectIdFile(), "utf-8")).toBe("not-a-uuid");
+  });
+
+  it("refuses without an interactive UI (headless)", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    await runProject(`project allow ${file}`);
+
+    const ctx = await runProject(`project revoke ${file}`, { hasUI: false });
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/interactive session/);
+  });
+});
+
+describe("/ward project list", () => {
+  it("reports none when there are no persistent grants", async () => {
+    const ctx = await runProject("project list");
+    expect(ctx.notifications[0]?.type).toBe("info");
+    expect(ctx.notifications[0]?.message).toMatch(/No persistent grants/);
+  });
+
+  it("lists operation/path/file-or-directory for existing grants, read-only", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    await runProject(`project allow write ${file}`);
+
+    const ctx = await runProject("project list");
+    const msg = ctx.notifications[0]?.message ?? "";
+    expect(msg).toMatch(/allow write/);
+    expect(msg).toMatch(/notes\.txt/);
+    expect(msg).toMatch(/\(file\)/);
+    expect(ctx.confirmCalls).toHaveLength(0);
+  });
+
+  it("works headless (read-only)", async () => {
+    const ctx = await runProject("project list", { hasUI: false });
+    expect(ctx.notifications[0]?.type).toBe("info");
+  });
+});
+
+describe("/ward project unknown subcommand", () => {
+  it("shows project usage for an unrecognised subcommand", async () => {
+    const ctx = await runProject("project bogus");
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/Usage: \/ward project/);
+  });
+});
+
+describe("/ward project deny (unsupported)", () => {
+  it("reports deny is unsupported with clear usage, without touching the UI", async () => {
+    const ctx = await runProject("project deny read ~/foo");
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/not supported/i);
+    expect(ctx.notifications[0]?.message).toMatch(/allow-only/i);
+    expect(ctx.confirmCalls).toHaveLength(0);
+  });
+});
+
+describe("/ward project (no-arg manager)", () => {
+  it("closes immediately without any changes", async () => {
+    const ctx = await runProject("project", { selectSequence: ["Close"] });
+    expect(ctx.confirmCalls).toHaveLength(0);
+    expect(await readProjectIdFile()).toBeNull();
+  });
+
+  it("adds a grant via Add -> operation -> path, then Close", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+
+    const ctx = await runProject("project", {
+      selectSequence: ["Add", "read", "Close"],
+      inputSequence: [file],
+    });
+
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Persisted read grant/);
+    const id = await readProjectIdFile();
+    const written = JSON.parse(await readFile(grantsFileFor(id as string), "utf-8"));
+    expect(written.grants).toHaveLength(1);
+  });
+
+  it("returns to the menu when Add is cancelled (no path entered)", async () => {
+    const ctx = await runProject("project", {
+      selectSequence: ["Add", "read", "Close"],
+      inputSequence: [undefined],
+    });
+    expect(ctx.notifications).toHaveLength(0);
+    expect(await readProjectIdFile()).toBeNull();
+  });
+
+  it("revokes a grant via Revoke -> select -> confirm, then Close", async () => {
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    await runProject(`project allow ${file}`);
+    const id = await readProjectIdFile();
+
+    let step = 0;
+    const ctx = await runProject("project", {
+      selectImpl: (_message, options) => {
+        step++;
+        if (step === 1) return "Revoke";
+        if (step === 2) return options[0];
+        return "Close";
+      },
+    });
+
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Revoked persistent grant/);
+    await expect(readFile(grantsFileFor(id as string), "utf-8")).rejects.toThrow();
+  });
+
+  it("resolves the selected revoke option by numbered index, not by ambiguous label text", async () => {
+    // Two entries with identical path/operations format to identical label
+    // text; the manager must still map the user's selection back to the
+    // right array slot via the numbered prefix instead of `indexOf(label)`.
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hi");
+    await runProject(`project allow ${file}`);
+    const id = await readProjectIdFile();
+    const grantsPath = grantsFileFor(id as string);
+    const before = JSON.parse(await readFile(grantsPath, "utf-8"));
+    await writeFile(grantsPath, JSON.stringify({ grants: [before.grants[0], before.grants[0]] }), "utf-8");
+
+    let step = 0;
+    let capturedRevokeOptions: string[] = [];
+    const ctx = await runProject("project", {
+      selectImpl: (_message, options) => {
+        step++;
+        if (step === 1) return "Revoke";
+        if (step === 2) {
+          capturedRevokeOptions = options;
+          expect(options[0]).not.toBe(options[1]); // numbered prefixes make them distinct
+          expect(options[0]?.replace(/^\d+\. /, "")).toBe(options[1]?.replace(/^\d+\. /, ""));
+          return options[1];
+        }
+        return "Close";
+      },
+    });
+
+    expect(capturedRevokeOptions).toHaveLength(2);
+    expect(ctx.notifications.at(-1)?.message).toMatch(/Revoked persistent grant/);
+    await expect(readFile(grantsPath, "utf-8")).rejects.toThrow();
+  });
+
+  it("refuses without full interactive UI support", async () => {
+    const ctx = await runProject("project", { hasUI: false });
+    expect(ctx.notifications[0]?.type).toBe("warning");
+    expect(ctx.notifications[0]?.message).toMatch(/interactive session/);
   });
 });
 
@@ -1023,5 +1233,50 @@ describe("/ward integration sequences", () => {
     const notes = await run(`status ${file}`, store);
     const msg = notes[0]?.message ?? "";
     expect(msg).toMatch(/grantable/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startupError (fail-closed startup)
+// ---------------------------------------------------------------------------
+
+describe("startupError", () => {
+  it("refuses every subcommand and reports repair/reload required, without mutating or reporting normal policy", async () => {
+    const store = new GrantStore();
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+    const ctx = makeCtx();
+
+    await wardCommandHandler(`allow ${file}`, ctx, {
+      rules: [],
+      projectRoot,
+      homeDir,
+      grants: store,
+      startupError: "Cannot read config file: boom",
+    });
+
+    expect(ctx.notifications).toHaveLength(1);
+    expect(ctx.notifications[0]?.type).toBe("error");
+    expect(ctx.notifications[0]?.message).toMatch(/boom/);
+    expect(ctx.notifications[0]?.message).toMatch(/reload.*restart/);
+    // No grant was recorded — the command was refused outright.
+    expect(store.listAllows()).toHaveLength(0);
+  });
+
+  it("also refuses read-only subcommands like status/list", async () => {
+    const store = new GrantStore();
+    const ctx = makeCtx();
+
+    await wardCommandHandler("list", ctx, {
+      rules: [],
+      projectRoot,
+      homeDir,
+      grants: store,
+      startupError: "malformed ward.id",
+    });
+
+    expect(ctx.notifications).toHaveLength(1);
+    expect(ctx.notifications[0]?.type).toBe("error");
+    expect(ctx.notifications[0]?.message).not.toMatch(/No active session grants/);
   });
 });

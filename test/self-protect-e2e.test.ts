@@ -29,12 +29,13 @@ afterEach(async () => {
 
 /**
  * End-to-end proof that nominal-path preservation (resolve.ts) composes with
- * guard self-protection (self-protect.ts + config.ts loadConfig) across real
- * symlinked `.pi` ancestors for both the project config and the global
- * config — not synthetic paths.
+ * guard self-protection (self-protect.ts + config.ts loadConfig) across a
+ * real symlinked `.pi` ancestor for the global config — not a synthetic
+ * path. Also verifies a project-local `.pi/ward.json` is no longer loaded or
+ * structurally protected.
  */
-describe("self-protection end-to-end — symlinked project and global .pi ancestors", () => {
-  it("denies writes to both configs by nominal structure, and to an identity-aliased path, through real symlinked ancestors", async () => {
+describe("self-protection end-to-end — symlinked global .pi ancestor; project config not protected", () => {
+  it("denies writes to the global config by nominal structure and to an identity-aliased path, through a real symlinked ancestor", async () => {
     // --- Global config behind a symlinked `.pi` ancestor ---
     const realHome = join(tempDir, "real-home");
     await mkdir(join(realHome, ".pi", "agent"), { recursive: true });
@@ -49,39 +50,19 @@ describe("self-protection end-to-end — symlinked project and global .pi ancest
     const nominalGlobalConfig = join(home, ".pi", "agent", "ward.json");
     mockGetAgentDir.mockReturnValue(join(home, ".pi", "agent"));
 
-    // --- Project config behind a symlinked `.pi` ancestor ---
-    const realProjectBase = join(tempDir, "real-project");
-    await mkdir(join(realProjectBase, ".pi"), { recursive: true });
-    const realProjectConfig = join(realProjectBase, ".pi", "ward.json");
-    await writeFile(realProjectConfig, '{"rules":[]}');
-
+    // --- A project-local `.pi/ward.json` exists on disk but is not loaded ---
     const projectRoot = join(tempDir, "project");
-    await mkdir(projectRoot, { recursive: true });
-    // project/.pi -> real-project/.pi (symlinked project ancestor)
-    await symlink(join(realProjectBase, ".pi"), join(projectRoot, ".pi"));
+    await mkdir(join(projectRoot, ".pi"), { recursive: true });
+    const projectConfig = join(projectRoot, ".pi", "ward.json");
+    await writeFile(projectConfig, '{"rules":[]}');
 
-    const nominalProjectConfig = join(projectRoot, ".pi", "ward.json");
+    // Load the (global-only) config through its symlinked ancestor.
+    const { rules, protectedIdentities } = await loadConfig(home);
+    expect(protectedIdentities).toHaveLength(1);
 
-    // Load both configs through their symlinked ancestors.
-    const { rules, protectedIdentities } = await loadConfig(projectRoot, home);
-    expect(protectedIdentities).toHaveLength(2);
-
-    // 1. Writing to the nominal (pre-resolution) project config path is denied
+    // 1. Writing to the nominal (pre-resolution) global config path is denied
     //    structurally, even though the symlinked `.pi` ancestor rewrites the
-    //    real path to something under real-project/.pi.
-    const projectResult = await guard(
-      "write",
-      [nominalProjectConfig],
-      "write",
-      rules,
-      projectRoot,
-      undefined,
-      protectedIdentities,
-    );
-    expect(projectResult.allowed).toBe(false);
-    if (!projectResult.allowed) expect(projectResult.reason).toMatch(/ward config/i);
-
-    // 2. Same for the nominal global config path.
+    //    real path to something under real-home/.pi.
     const globalResult = await guard(
       "write",
       [nominalGlobalConfig],
@@ -94,15 +75,30 @@ describe("self-protection end-to-end — symlinked project and global .pi ancest
     expect(globalResult.allowed).toBe(false);
     if (!globalResult.allowed) expect(globalResult.reason).toMatch(/ward config/i);
 
-    // 3. A hardlink alias to the real project config file, at a path that
-    //    does not structurally look like `.pi/ward.json` at all, is still
+    // 2. A hardlink alias to the real global config file, at a path that
+    //    does not structurally look like the global config at all, is still
     //    denied — purely via active on-disk identity, threaded end-to-end
     //    from `loadConfig` through `guard`.
     const alias = join(tempDir, "totally-unrelated-name.txt");
-    await link(realProjectConfig, alias);
+    await link(realGlobalConfig, alias);
     const aliasResult = await guard("write", [alias], "write", rules, projectRoot, undefined, protectedIdentities);
     expect(aliasResult.allowed).toBe(false);
     if (!aliasResult.allowed) expect(aliasResult.reason).toMatch(/ward config/i);
+
+    // 3. The project-local .pi/ward.json is not loaded and carries no active
+    //    identity, so it is no longer structurally self-protected — writing
+    //    it is governed by ordinary baseline/rule evaluation (allowed here,
+    //    since it's inside the project root and no rule denies it).
+    const projectResult = await guard(
+      "write",
+      [projectConfig],
+      "write",
+      rules,
+      projectRoot,
+      undefined,
+      protectedIdentities,
+    );
+    expect(projectResult.allowed).toBe(true);
 
     // 4. An unrelated, non-aliased file (inside the project root, so baseline
     //    rules alone would allow it) is unaffected by the protection.

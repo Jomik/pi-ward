@@ -51,14 +51,11 @@ function matchesAnchored(pattern: ParsedPattern, configDir: string, absolutePath
  * Determine whether an absolute path matches a parsed pattern.
  *
  * @param pattern   - The parsed pattern to match against.
- * @param configDir - Absolute path to the directory the config governs
- *                    (used for anchored patterns).
  * @param absolutePath - The absolute path to test.
  * @param homeDir   - Absolute path to the user's home directory
  *                    (used for home-anchored patterns).
  */
-export function matches(pattern: ParsedPattern, configDir: string, absolutePath: string, homeDir?: string): boolean {
-  if (pattern.anchored) return matchesAnchored(pattern, configDir, absolutePath);
+export function matches(pattern: ParsedPattern, absolutePath: string, homeDir?: string): boolean {
   if (pattern.absoluteAnchored) return matchesAnchored(pattern, "/", absolutePath);
   if (pattern.homeAnchored) {
     if (homeDir === undefined) {

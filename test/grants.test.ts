@@ -2,9 +2,10 @@ import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GrantStore } from "../src/grants.js";
+import { GrantStore, matchesProjectGrants } from "../src/grants.js";
 import { checkPath, guard } from "../src/guard.js";
 import { parsePattern } from "../src/pattern.js";
+import type { ParsedGrant } from "../src/project-grants.js";
 import type { ParsedRule } from "../src/rules.js";
 
 let tempDir: string;
@@ -337,6 +338,122 @@ describe("checkPath with grants", () => {
 
     const result = await checkPath("write", file, "write", [], projectRoot, store);
     expect(result.allowed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchesProjectGrants — exact/directory/operation semantics
+// ---------------------------------------------------------------------------
+
+describe("matchesProjectGrants", () => {
+  it("matches an exact-file grant for its own path", () => {
+    const grants: ParsedGrant[] = [{ resolvedPath: "/a/file.txt", operations: "read", directory: false }];
+    expect(matchesProjectGrants(grants, "/a/file.txt", "read")).toBe(true);
+  });
+
+  it("does not match an exact-file grant for a different path, even a descendant-looking one", () => {
+    const grants: ParsedGrant[] = [{ resolvedPath: "/a/file.txt", operations: "read", directory: false }];
+    expect(matchesProjectGrants(grants, "/a/file.txt.bak", "read")).toBe(false);
+  });
+
+  it("matches a directory grant for a descendant path", () => {
+    const grants: ParsedGrant[] = [{ resolvedPath: "/a/dir", operations: "read", directory: true }];
+    expect(matchesProjectGrants(grants, "/a/dir/sub/file.txt", "read")).toBe(true);
+  });
+
+  it("does not match a directory grant for a sibling path", () => {
+    const grants: ParsedGrant[] = [{ resolvedPath: "/a/dir", operations: "read", directory: true }];
+    expect(matchesProjectGrants(grants, "/a/other/file.txt", "read")).toBe(false);
+  });
+
+  it("a write grant covers both read and write", () => {
+    const grants: ParsedGrant[] = [{ resolvedPath: "/a/file.txt", operations: "write", directory: false }];
+    expect(matchesProjectGrants(grants, "/a/file.txt", "read")).toBe(true);
+    expect(matchesProjectGrants(grants, "/a/file.txt", "write")).toBe(true);
+  });
+
+  it("a read grant does not cover write", () => {
+    const grants: ParsedGrant[] = [{ resolvedPath: "/a/file.txt", operations: "read", directory: false }];
+    expect(matchesProjectGrants(grants, "/a/file.txt", "write")).toBe(false);
+  });
+
+  it("returns false for an empty grants list", () => {
+    expect(matchesProjectGrants([], "/a/file.txt", "read")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkPath — persistent project grant precedence
+// ---------------------------------------------------------------------------
+
+describe("checkPath with projectGrants", () => {
+  it("a persistent project grant overrides an explicit global deny rule", async () => {
+    const file = join(outsideDir, "shared.txt");
+    await writeFile(file, "data");
+    const resolvedFile = await realpath(file);
+
+    const rules: ParsedRule[] = [makeRule("shared.txt", "deny", outsideDir)];
+    const projectGrants: ParsedGrant[] = [{ resolvedPath: resolvedFile, operations: "read", directory: false }];
+
+    const result = await checkPath("read", file, "read", rules, projectRoot, undefined, undefined, [], projectGrants);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("a persistent project grant overrides a baseline deny", async () => {
+    const file = join(outsideDir, "shared.txt");
+    await writeFile(file, "data");
+    const resolvedFile = await realpath(file);
+
+    const projectGrants: ParsedGrant[] = [{ resolvedPath: resolvedFile, operations: "read", directory: false }];
+
+    const result = await checkPath("read", file, "read", [], projectRoot, undefined, undefined, [], projectGrants);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("a session deny still beats a persistent project grant", async () => {
+    const file = join(outsideDir, "shared.txt");
+    await writeFile(file, "data");
+    const resolvedFile = await realpath(file);
+
+    const store = new GrantStore();
+    store.addDeny(resolvedFile, "read", false);
+    const projectGrants: ParsedGrant[] = [{ resolvedPath: resolvedFile, operations: "read", directory: false }];
+
+    const result = await checkPath("read", file, "read", [], projectRoot, store, undefined, [], projectGrants);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(false);
+      expect(result.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
+  it("self-protection still beats a persistent project grant", async () => {
+    const file = join(projectRoot, ".pi", "ward.id");
+    await mkdir(join(projectRoot, ".pi"), { recursive: true });
+    await writeFile(file, "550e8400-e29b-41d4-a716-446655440000");
+    const resolvedFile = await realpath(file);
+
+    const projectGrants: ParsedGrant[] = [{ resolvedPath: resolvedFile, operations: "read", directory: false }];
+
+    const result = await checkPath("read", file, "read", [], projectRoot, undefined, undefined, [], projectGrants);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(false);
+    }
+  });
+
+  it("an operation not covered by the grant remains a grantable baseline deny", async () => {
+    const file = join(outsideDir, "shared.txt");
+    await writeFile(file, "data");
+    const resolvedFile = await realpath(file);
+
+    const projectGrants: ParsedGrant[] = [{ resolvedPath: resolvedFile, operations: "read", directory: false }];
+
+    const result = await checkPath("write", file, "write", [], projectRoot, undefined, undefined, [], projectGrants);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.grantable).toBe(true);
+    }
   });
 });
 
