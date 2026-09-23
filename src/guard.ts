@@ -15,16 +15,16 @@ export type GuardResult =
 
 /**
  * Check a single path against self-protection, session denies, persistent
- * project grants, rules, and the session grant store.
+ * project grants, explicit session allows, global rules, and the baseline.
  *
  * Evaluation order: resolve → self-protect → session deny → persistent
- * project grant → global rule evaluator → baseline / session grant /
- * call-scoped approval.
+ * project grant → explicit /ward allow → global rule evaluator → baseline
+ * deny / prompt-created allow / call-scoped approval.
  *
  * Returns:
  * - `{ allowed: true }` — access permitted.
- * - `{ allowed: false; grantable: false }` — hard deny (self-protection, session deny, explicit rule, or resolve error). No grant possible.
- * - `{ allowed: false; grantable: true; resolvedPath; operation }` — baseline deny that the user can override.
+ * - `{ allowed: false; grantable: false }` — no interactive prompt (self-protection, session deny, explicit rule, or resolve error). An explicit rule deny may still be overridden by /ward allow.
+ * - `{ allowed: false; grantable: true; resolvedPath; operation }` — baseline deny that the user can override interactively.
  */
 export async function checkPath(
   toolName: string,
@@ -55,9 +55,8 @@ export async function checkPath(
     };
   }
 
-  // Session denies are hard temporary blocks: they override rule allows, baseline
-  // allows, session grants, and call-scoped approvals. Checked before rule evaluation,
-  // right after path resolution and self-protection.
+  // Session denies are hard temporary blocks: they override project grants,
+  // session allows, rules, baseline allows, and call-scoped approvals.
   if (grants?.isDenied(resolved.path, operation)) {
     return {
       allowed: false,
@@ -66,11 +65,12 @@ export async function checkPath(
     };
   }
 
-  // Persistent project grants are an explicit, trusted exception layer: they
-  // may override an ordinary global deny rule, so they are checked before
-  // rule evaluation. They are allow-only and never override self-protection
-  // or session denies, both already checked above.
+  // Project grants and explicit /ward allows override ordinary global rules
+  // and the baseline; prompt-created allows only override baseline denies.
   if (matchesProjectGrants(projectGrants, resolved.path, operation)) {
+    return { allowed: true };
+  }
+  if (grants?.isExplicitlyAllowed(resolved.path, operation)) {
     return { allowed: true };
   }
 
@@ -80,7 +80,7 @@ export async function checkPath(
     return { allowed: true };
   }
 
-  // Denied by explicit rule — not grantable.
+  // Explicit rule denies do not trigger an interactive approval prompt.
   if (result.source === "rule") {
     return {
       allowed: false,
@@ -89,14 +89,12 @@ export async function checkPath(
     };
   }
 
-  // Baseline deny — check session grants before declaring it grantable.
+  // Prompt-created session allows and call-scoped recursive approval (e.g. a
+  // grep run against a prompt-approved directory) permit baseline-denied paths
+  // only, after explicit rules have had the chance to win.
   if (grants?.isAllowed(resolved.path, operation)) {
     return { allowed: true };
   }
-
-  // Call-scoped recursive approval (e.g. a grep run against a prompt-approved
-  // directory): permits descendants of that root for this call only, after
-  // explicit rules and session grants/denies have already had the chance to win.
   if (callScopedRoot !== undefined && isDescendantOf(callScopedRoot, resolved.path)) {
     return { allowed: true };
   }

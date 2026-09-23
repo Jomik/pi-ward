@@ -111,10 +111,11 @@ describe("GrantStore", () => {
 
   it("clear removes all decisions", () => {
     const store = new GrantStore();
-    store.addAllow("/a", "read", false);
+    store.addAllow("/a", "read", false, true);
     store.addDeny("/b", "read", false);
     store.clear();
     expect(store.isAllowed("/a", "read")).toBe(false);
+    expect(store.isExplicitlyAllowed("/a", "read")).toBe(false);
     expect(store.isDenied("/b", "read")).toBe(false);
   });
 });
@@ -126,10 +127,11 @@ describe("GrantStore", () => {
 describe("GrantStore.revoke", () => {
   it("removes an allow by exact path", () => {
     const store = new GrantStore();
-    store.addAllow("/some/path", "read", false);
+    store.addAllow("/some/path", "read", false, true);
     const removed = store.revoke("/some/path");
     expect(removed).toBe(true);
     expect(store.isAllowed("/some/path", "read")).toBe(false);
+    expect(store.isExplicitlyAllowed("/some/path", "read")).toBe(false);
   });
 
   it("removes a deny by exact path", () => {
@@ -298,20 +300,74 @@ describe("checkPath with grants", () => {
     }
   });
 
-  it("grant cannot override explicit deny rule", async () => {
-    const file = join(projectRoot, ".env.local");
+  it("session grant overrides an ordinary global deny only for its path and operation, not a session deny", async () => {
+    const file = join(outsideDir, ".env.local");
+    const other = join(outsideDir, ".env.other");
     await writeFile(file, "SECRET=foo");
+    await writeFile(other, "SECRET=bar");
 
     const store = new GrantStore();
     const resolvedFile = await realpath(file);
-    store.addAllow(resolvedFile, "read", false);
+    store.addAllow(resolvedFile, "read", false, true);
 
-    const rules: ParsedRule[] = [makeRule(".env*", "deny", projectRoot)];
-    const result = await checkPath("read", file, "read", rules, projectRoot, store);
+    const rules: ParsedRule[] = [makeRule(".env*", "deny", outsideDir)];
+    expect((await checkPath("read", file, "read", rules, projectRoot, store)).allowed).toBe(true);
+
+    for (const [path, operation] of [
+      [file, "write"],
+      [other, "read"],
+    ] as const) {
+      const result = await checkPath(operation, path, operation, rules, projectRoot, store);
+      expect(result.allowed).toBe(false);
+      if (!result.allowed) {
+        expect(result.grantable).toBe(false);
+        expect(result.reason).toMatch(/denied by policy/);
+      }
+    }
+
+    store.addDeny(resolvedFile, "read", false);
+    const denied = await checkPath("read", file, "read", rules, projectRoot, store);
+    expect(denied.allowed).toBe(false);
+    if (!denied.allowed) {
+      expect(denied.grantable).toBe(false);
+      expect(denied.reason).toMatch(/denied by user \(session\)/);
+    }
+  });
+
+  it("prompt-created directory grant does not override an explicit deny for a descendant", async () => {
+    const blocked = join(outsideDir, ".env.local");
+    const sibling = join(outsideDir, "notes.txt");
+    await writeFile(blocked, "SECRET=x");
+    await writeFile(sibling, "hello");
+    const store = new GrantStore();
+    const rules: ParsedRule[] = [makeRule(".env*", "deny", outsideDir)];
+
+    const directory = await checkPath("read", outsideDir, "read", rules, projectRoot, store);
+    expect(directory.allowed).toBe(false);
+    if (!directory.allowed) expect(directory.grantable).toBe(true);
+    store.addAllow(await realpath(outsideDir), "read", true);
+
+    const denied = await checkPath("read", blocked, "read", rules, projectRoot, store);
+    expect(denied.allowed).toBe(false);
+    if (!denied.allowed) {
+      expect(denied.grantable).toBe(false);
+      expect(denied.reason).toMatch(/denied by policy/);
+    }
+    expect((await checkPath("read", sibling, "read", rules, projectRoot, store)).allowed).toBe(true);
+  });
+
+  it("self-protection still blocks a session grant", async () => {
+    const file = join(projectRoot, ".pi", "ward.id");
+    await mkdir(join(projectRoot, ".pi"), { recursive: true });
+    await writeFile(file, "550e8400-e29b-41d4-a716-446655440000");
+    const store = new GrantStore();
+    store.addAllow(await realpath(file), "write", false);
+
+    const result = await checkPath("read", file, "read", [], projectRoot, store);
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
       expect(result.grantable).toBe(false);
-      expect(result.reason).toMatch(/denied by policy/);
+      expect(result.reason).toMatch(/ward config file/);
     }
   });
 

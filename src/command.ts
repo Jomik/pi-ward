@@ -113,20 +113,13 @@ async function handleAllow(rest: string, deps: WardCommandDeps, ctx: CommandCont
     return;
   }
 
-  // Only baseline denies are grantable; reject explicit rule denies.
-  const evalResult = evaluate(deps.rules, operation, resolved.path, deps.projectRoot);
-  if (evalResult.effect === "deny" && evalResult.source === "rule") {
-    ctx.ui.notify(`Cannot grant: ${rawPath} is denied by an explicit policy rule`, "warning");
-    return;
-  }
-
   if (await isSelfProtected(resolved.nominalPath, resolved.path, operation, deps.protectedIdentities)) {
     ctx.ui.notify(`Cannot grant ${operation}: ${rawPath} is a ward config file (${operation}-protected)`, "warning");
     return;
   }
 
   const dir = trailingSlash || (await isDirectory(resolved.path));
-  deps.grants.addAllow(resolved.path, operation, dir);
+  deps.grants.addAllow(resolved.path, operation, dir, true);
 
   const label = displayPath(resolved.path, deps.homeDir) + (dir ? "/" : "");
   ctx.ui.notify(`Granted ${operation} access to ${label}${dir ? " (directory)" : " (file)"}`, "info");
@@ -700,11 +693,15 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
       continue;
     }
 
-    // Persistent project grants override an explicit global deny rule and
-    // the baseline, so report them before rule evaluation — matching
-    // checkPath's precedence.
+    // Persistent project grants and explicit /ward allows override global
+    // rules and the baseline, matching checkPath's precedence.
     if (matchesProjectGrants(deps.projectGrants ?? [], resolved.path, op)) {
       lines.push(`  ${op}: allowed by persistent project grant`);
+      continue;
+    }
+
+    if (deps.grants.isExplicitlyAllowed(resolved.path, op)) {
+      lines.push(`  ${op}: allowed by session grant`);
       continue;
     }
 
@@ -716,7 +713,7 @@ async function handleStatus(rest: string, deps: WardCommandDeps, ctx: CommandCon
       lines.push(`  ${op}: allowed by baseline (inside project root)`);
     } else if (evalResult.effect === "deny" && evalResult.source === "rule") {
       lines.push(
-        `  ${op}: denied by rule: pattern "${evalResult.pattern}" (from ${evalResult.configDir}) — not grantable`,
+        `  ${op}: denied by rule: pattern "${evalResult.pattern}" (from ${evalResult.configDir}) — explicit /ward allow required (no interactive prompt)`,
       );
     } else if (deps.grants.isAllowed(resolved.path, op)) {
       lines.push(`  ${op}: allowed by session grant`);

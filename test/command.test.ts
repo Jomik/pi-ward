@@ -5,6 +5,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { wardCommandHandler } from "../src/command.js";
 import { GrantStore } from "../src/grants.js";
+import { checkPath } from "../src/guard.js";
 import { parsePattern } from "../src/pattern.js";
 import type { ParsedGrant } from "../src/project-grants.js";
 import type { ParsedRule } from "../src/rules.js";
@@ -169,16 +170,27 @@ describe("/ward allow", () => {
     expect(store.isAllowed(resolvedFile, "read")).toBe(true);
   });
 
-  it("rejects when path is denied by an explicit rule", async () => {
+  it("grants write over an ordinary global deny rule and reports the session grant", async () => {
     const file = join(outsideDir, ".env.local");
     await writeFile(file, "SECRET=x");
     const store = new GrantStore();
+    const resolvedFile = await realpath(file);
+    const rules = [makeRule(".env*", "deny", outsideDir)];
 
-    const rules = [makeRule(".env*", "deny", projectRoot)];
-    const notes = await run(`allow ${file}`, store, rules);
-    expect(notes[0]?.type).toBe("warning");
-    expect(notes[0]?.message).toMatch(/explicit policy rule/);
-    expect(store.listAllows()).toHaveLength(0);
+    const before = await checkPath("read", file, "read", rules, projectRoot, store);
+    expect(before.allowed).toBe(false);
+    if (!before.allowed) expect(before.grantable).toBe(false);
+
+    const notes = await run(`allow write ${file}`, store, rules);
+    expect(notes[0]?.type).toBe("info");
+    expect(store.listAllows()).toEqual([{ path: resolvedFile, operation: "write", directory: false }]);
+    expect((await checkPath("read", file, "read", rules, projectRoot, store)).allowed).toBe(true);
+    expect((await checkPath("write", file, "write", rules, projectRoot, store)).allowed).toBe(true);
+
+    const status = await run(`status ${file}`, store, rules);
+    expect(status[0]?.type).toBe("info");
+    expect(status[0]?.message).toMatch(/read: allowed by session grant/);
+    expect(status[0]?.message).toMatch(/write: allowed by session grant/);
   });
 
   it("shows usage when no path is given", async () => {
@@ -530,7 +542,29 @@ describe("/ward status", () => {
     const notes = await run(`status ${file}`, store, rules);
     const msg = notes[0]?.message ?? "";
     expect(msg).toMatch(/denied by rule/);
-    expect(msg).toMatch(/not grantable/);
+    expect(msg).toMatch(/explicit \/ward allow required \(no interactive prompt\)/);
+  });
+
+  it("reports an explicit deny for a descendant despite a prompt-created directory grant", async () => {
+    const blocked = join(outsideDir, ".env.local");
+    const sibling = join(outsideDir, "notes.txt");
+    await writeFile(blocked, "SECRET=x");
+    await writeFile(sibling, "hello");
+    const store = new GrantStore();
+    const rules = [makeRule(".env*", "deny", outsideDir)];
+
+    const directory = await checkPath("read", outsideDir, "read", rules, projectRoot, store);
+    expect(directory.allowed).toBe(false);
+    if (!directory.allowed) expect(directory.grantable).toBe(true);
+    store.addAllow(await realpath(outsideDir), "read", true);
+
+    const denied = await run(`status ${blocked}`, store, rules);
+    expect(denied[0]?.type).toBe("info");
+    expect(denied[0]?.message).toMatch(/read: denied by rule/);
+    expect(denied[0]?.message).not.toMatch(/read: allowed by session grant/);
+
+    const allowed = await run(`status ${sibling}`, store, rules);
+    expect(allowed[0]?.message).toMatch(/read: allowed by session grant/);
   });
 
   it("reports session grant when active", async () => {

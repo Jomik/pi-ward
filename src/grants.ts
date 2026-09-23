@@ -51,19 +51,23 @@ export function matchesProjectGrants(grants: ParsedGrant[], absolutePath: string
 /**
  * In-memory store for runtime access decisions made by the user.
  *
- * Session grants override baseline denies (paths outside project root that have
- * no explicit deny rule). They cannot override explicit deny rules.
+ * Explicit /ward allows override ordinary global denies and the baseline;
+ * prompt-created allows override baseline denies only. Neither overrides
+ * self-protection or session denies. Rule denies do not trigger prompts.
  *
- * Session denies are hard temporary blocks: they override session grants, rule
- * allows, baseline allows, and call-scoped approvals for the remainder of the
- * process.
+ * Session denies are hard temporary blocks: they override session allows,
+ * persistent project grants, rule and baseline allows, and call-scoped
+ * approvals for the remainder of the process.
  */
 export class GrantStore {
   private allows: Decision[] = [];
+  private explicitAllows: Decision[] = [];
   private denies: Decision[] = [];
 
-  addAllow(path: string, operation: Operation, directory: boolean): void {
-    this.allows.push({ path, operation, directory });
+  addAllow(path: string, operation: Operation, directory: boolean, explicit = false): void {
+    const decision = { path, operation, directory };
+    this.allows.push(decision);
+    if (explicit) this.explicitAllows.push(decision);
   }
 
   addDeny(path: string, operation: Operation, directory: boolean): void {
@@ -72,6 +76,10 @@ export class GrantStore {
 
   isAllowed(absolutePath: string, operation: Operation): boolean {
     return matchDecisions(this.allows, absolutePath, operation, "allow");
+  }
+
+  isExplicitlyAllowed(absolutePath: string, operation: Operation): boolean {
+    return matchDecisions(this.explicitAllows, absolutePath, operation, "allow");
   }
 
   isDenied(absolutePath: string, operation: Operation): boolean {
@@ -96,6 +104,7 @@ export class GrantStore {
     const beforeAllows = this.allows.length;
     const beforeDenies = this.denies.length;
     this.allows = this.allows.filter((d) => d.path !== absolutePath);
+    this.explicitAllows = this.explicitAllows.filter((d) => d.path !== absolutePath);
     this.denies = this.denies.filter((d) => d.path !== absolutePath);
     return this.allows.length < beforeAllows || this.denies.length < beforeDenies;
   }
@@ -103,6 +112,7 @@ export class GrantStore {
   /** Remove all decisions (for testing). */
   clear(): void {
     this.allows = [];
+    this.explicitAllows = [];
     this.denies = [];
   }
 }
