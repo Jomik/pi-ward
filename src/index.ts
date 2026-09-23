@@ -146,6 +146,18 @@ export function describeToolCall(event: ToolCallEvent, operation: Operation, inp
   if (isToolCallEventType("grep", event)) {
     return `grep ${event.input.pattern} in ${inputPath}`;
   }
+  if (isToolCallEventType("ls", event)) {
+    return `ls ${inputPath}`;
+  }
+  if (isToolCallEventType("edit", event)) {
+    return `edit ${inputPath}`;
+  }
+  if (isToolCallEventType<"delete", { path: string }>("delete", event)) {
+    return `delete ${inputPath}`;
+  }
+  if (isToolCallEventType<"move", { source: string; destination: string }>("move", event)) {
+    return `move ${event.input.source} to ${event.input.destination}`;
+  }
   return `${operation} ${inputPath}`;
 }
 
@@ -184,17 +196,23 @@ export async function promptAccess(
     }
 
     const dir = await isDirectory(resolvedPath);
+    const canonicalParent = dirname(resolvedPath);
+    // Name the canonical resolved path (and parent) explicitly in each scope
+    // label, so a raw/symlinked input path that differs from `resolvedPath`
+    // is visible to the user before the broader session grant is recorded.
     const scopeOptions = dir
-      ? ["Once", "This directory for session"]
-      : ["Once", "This file for session", "Parent directory for session"];
+      ? ["Once", `Allow ${resolvedPath} for session`]
+      : ["Once", `Allow ${resolvedPath} for session`, `Allow ${canonicalParent} for session`];
     const scope = await ctx.ui.select("Approve scope:", scopeOptions);
+    // Match by index into the exact option list just offered, not by
+    // reconstructing/parsing the label string, since the resolved path is
+    // interpolated into it.
+    const scopeIndex = scope === undefined ? -1 : scopeOptions.indexOf(scope);
 
-    if (scope === "This directory for session") {
-      grants.addAllow(resolvedPath, operation, true);
-    } else if (scope === "This file for session") {
-      grants.addAllow(resolvedPath, operation, false);
-    } else if (scope === "Parent directory for session") {
-      grants.addAllow(dirname(resolvedPath), operation, true);
+    if (scopeIndex === 1) {
+      grants.addAllow(resolvedPath, operation, dir);
+    } else if (scopeIndex === 2) {
+      grants.addAllow(canonicalParent, operation, true);
     }
 
     return undefined;

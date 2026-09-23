@@ -1,6 +1,6 @@
-import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -216,6 +216,32 @@ describe("describeToolCall", () => {
     expect(describeToolCall(makeReadEvent(path), "read", path)).toBe(`read ${path}`);
     expect(describeToolCall(makeWriteEvent(path), "write", path)).toBe(`write ${path}`);
   });
+
+  it("names the path for 'edit'", () => {
+    const path = "/outside/app.ts";
+    const event = makeEvent("edit", { path, edits: [] });
+    expect(describeToolCall(event, "write", path)).toBe(`edit ${path}`);
+  });
+
+  it("names the path for 'ls'", () => {
+    const path = "/outside/dir";
+    const event = makeEvent("ls", { path });
+    expect(describeToolCall(event, "read", path)).toBe(`ls ${path}`);
+  });
+
+  it("names the path for 'delete'", () => {
+    const path = "/outside/file.txt";
+    const event = makeEvent("delete", { path });
+    expect(describeToolCall(event, "write", path)).toBe(`delete ${path}`);
+  });
+
+  it("names both source and destination for 'move', regardless of which path triggered the prompt", () => {
+    const source = "/outside/old-name.txt";
+    const destination = "/outside/new-name.txt";
+    const event = makeEvent("move", { source, destination });
+    expect(describeToolCall(event, "write", source)).toBe(`move ${source} to ${destination}`);
+    expect(describeToolCall(event, "write", destination)).toBe(`move ${source} to ${destination}`);
+  });
 });
 
 describe("getArgumentCompletions", () => {
@@ -333,14 +359,14 @@ describe("promptAccess herdr reporting", () => {
       ui: {
         select: vi.fn(async (message: string, options?: string[]) => {
           if (message.startsWith("Approve scope")) capturedOptions = options;
-          return message.startsWith("Access") ? "Approve" : "This directory for session";
+          return message.startsWith("Access") ? "Approve" : `Allow ${dir} for session`;
         }),
       },
     };
 
     await promptAccess(events, ctx, "read", "read", dir, dir, grants);
 
-    expect(capturedOptions).toEqual(["Once", "This directory for session"]);
+    expect(capturedOptions).toEqual(["Once", `Allow ${dir} for session`]);
     expect(grants.listAllows()).toEqual([{ path: dir, operation: "read", directory: true }]);
 
     const nested = join(dir, "child.txt");
@@ -359,18 +385,22 @@ describe("promptAccess herdr reporting", () => {
       ui: {
         select: vi.fn(async (message: string, options?: string[]) => {
           if (message.startsWith("Approve scope")) capturedOptions = options;
-          return message.startsWith("Access") ? "Approve" : "This file for session";
+          return message.startsWith("Access") ? "Approve" : `Allow ${file} for session`;
         }),
       },
     };
 
     await promptAccess(events, ctx, "read", "read", file, file, grants);
 
-    expect(capturedOptions).toEqual(["Once", "This file for session", "Parent directory for session"]);
+    expect(capturedOptions).toEqual(["Once", `Allow ${file} for session`, `Allow ${dir} for session`]);
     expect(grants.listAllows()).toEqual([{ path: file, operation: "read", directory: false }]);
+
+    // A file-only grant must not cover a sibling in the same directory.
+    const sibling = join(dir, "other.txt");
+    expect(grants.isAllowed(sibling, "read")).toBe(false);
   });
 
-  it("grants the parent directory recursively when 'Parent directory for session' is selected", async () => {
+  it("grants the parent directory recursively when the parent-directory scope option is selected", async () => {
     const dir = await makeScopeDirs();
     const file = join(dir, "secret.txt");
     await writeFile(file, "x");
@@ -380,7 +410,7 @@ describe("promptAccess herdr reporting", () => {
       hasUI: true,
       ui: {
         select: vi.fn(async (message: string) =>
-          message.startsWith("Access") ? "Approve" : "Parent directory for session",
+          message.startsWith("Access") ? "Approve" : `Allow ${dir} for session`,
         ),
       },
     };
@@ -391,6 +421,42 @@ describe("promptAccess herdr reporting", () => {
 
     const sibling = join(dir, "other.txt");
     expect(grants.isAllowed(sibling, "read")).toBe(true);
+  });
+
+  it("names the resolved (canonical) path in scope options even when the raw input path differs (e.g. via a symlink)", async () => {
+    const dir = await makeScopeDirs();
+    const realDir = join(dir, "real");
+    await mkdir(realDir, { recursive: true });
+    const file = join(realDir, "secret.txt");
+    await writeFile(file, "x");
+    const linkDir = join(dir, "link");
+    await symlink(realDir, linkDir);
+    const rawInputPath = join(linkDir, "secret.txt");
+    const resolvedPath = await realpath(file);
+
+    expect(rawInputPath).not.toBe(resolvedPath);
+
+    const events = { emit: vi.fn() };
+    const grants = new GrantStore();
+    let capturedOptions: string[] | undefined;
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string, options?: string[]) => {
+          if (message.startsWith("Approve scope")) capturedOptions = options;
+          return message.startsWith("Access") ? "Approve" : "Once";
+        }),
+      },
+    };
+
+    await promptAccess(events, ctx, "read", "read", rawInputPath, resolvedPath, grants);
+
+    expect(capturedOptions).toEqual([
+      "Once",
+      `Allow ${resolvedPath} for session`,
+      `Allow ${dirname(resolvedPath)} for session`,
+    ]);
+    expect(capturedOptions?.some((opt) => opt.includes(rawInputPath))).toBe(false);
   });
 
   it("stores no grant when 'Once' is selected, for both directory and file targets", async () => {
