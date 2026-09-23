@@ -236,6 +236,7 @@ export async function handleToolCall(
     homeDir: string;
     grants: GrantStore;
     latestPrompt: string | undefined;
+    disablePrompts?: boolean;
     /**
      * Call-scoped recursive read context, keyed by `event.toolCallId`. When a
      * grep read targets a prompt-approved path — directory or single file —
@@ -288,6 +289,12 @@ export async function handleToolCall(
       );
       if (result.allowed) continue;
       if (!result.grantable) return { block: true, reason: result.reason };
+      if (deps.disablePrompts) {
+        return {
+          block: true,
+          reason: `[pi-ward] Blocked ${event.toolName} (${operation}) on ${inputPath}: outside project root`,
+        };
+      }
 
       if (operation === "read" && deps.latestPrompt !== undefined) {
         const promptApproval = await checkPromptApproval(deps.latestPrompt, inputPath, deps.projectRoot, deps.homeDir);
@@ -515,6 +522,12 @@ export async function reloadWardPolicy(
 }
 
 const factory: ExtensionFactory = async (pi) => {
+  pi.registerFlag("ward-no-prompts", {
+    description: "Block external access instead of prompting or approving from user messages",
+    type: "boolean",
+    default: false,
+  });
+
   const projectRoot = await realpath(process.cwd());
   const homeDir = await realpath(homedir());
   let rules: ParsedRule[] = [];
@@ -591,6 +604,7 @@ const factory: ExtensionFactory = async (pi) => {
       homeDir,
       grants,
       latestPrompt,
+      disablePrompts: pi.getFlag("ward-no-prompts") === true,
       callContexts,
       protectedIdentities,
       projectGrants,

@@ -14,6 +14,14 @@ Or try without installing:
 pi -e npm:pi-ward
 ```
 
+To block otherwise-grantable outside-project access without approval prompts or implicit approval from user messages:
+
+```bash
+pi --ward-no-prompts -e npm:pi-ward
+```
+
+This session flag defaults to off. It does not disable explicit global rule allows, `/ward` session grants, or persistent project grants; hard denies still apply. It only disables interactive approval and prompt-derived read approval (including `@`-marked directory references).
+
 ## Why
 
 - Prevents the agent from reading secrets (`.env`, `.pem`, credentials)
@@ -32,7 +40,7 @@ pi-ward intercepts file operations (`read`, `write`, `edit`, `delete`, `move`, a
 - Read/write within the project root: allowed
 - Any access outside the project root: denied
 
-When a path outside the project root is accessed and no explicit deny rule matches, ward prompts for approval (if a UI is available). You can approve or deny, scoped to a single attempt or the entire session. When approving a file (rather than a directory), you can choose to grant just that exact file for the session, or the broader parent directory (and everything beneath it) for the session. Alternatively, a read of an otherwise-grantable external path may be silently approved for the current turn when the user's latest own message references the path — existing files may be referenced bare or with `@` (exact file only, no subtree), while an `@`-marked existing directory reference also authorizes reads of anything existing beneath it, since bare directory mentions are too ambiguous to trust and directory tools may recurse. This approval is read-only, non-persistent, works without a UI, and never overrides explicit deny rules. See [DESIGN.md](./DESIGN.md#prompt-derived-approval-implicit-turn-scoped-grants) for the exact grammar.
+By default, when a path outside the project root is accessed and no explicit deny rule matches, ward prompts for approval (if a UI is available). You can approve or deny, scoped to a single attempt or the entire session. When approving a file (rather than a directory), you can choose to grant just that exact file for the session, or the broader parent directory (and everything beneath it) for the session. Alternatively, a read of an otherwise-grantable external path may be silently approved for the current turn when the user's latest own message references the path — existing files may be referenced bare or with `@` (exact file only, no subtree), while an `@`-marked existing directory reference also authorizes reads of anything existing beneath it, since bare directory mentions are too ambiguous to trust and directory tools may recurse. This approval is read-only, non-persistent, works without a UI, and never overrides explicit deny rules. See [DESIGN.md](./DESIGN.md#prompt-derived-approval-implicit-turn-scoped-grants) for the exact grammar.
 
 ## Config
 
