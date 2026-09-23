@@ -1,11 +1,12 @@
-import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GrantStore } from "../src/grants.js";
 import factory, {
+  describeToolCall,
   extractAccess,
   getArgumentCompletions,
   handleGrepResult,
@@ -197,6 +198,52 @@ describe("extractAccess", () => {
   });
 });
 
+describe("describeToolCall", () => {
+  it("includes the pattern and search path for 'find'", () => {
+    const event = makeEvent("find", { pattern: "**/project.assets.json", path: "~/orca" });
+    const summary = describeToolCall(event, "read", "~/orca");
+    expect(summary).toBe("find **/project.assets.json in ~/orca");
+  });
+
+  it("includes the pattern and search path for 'grep'", () => {
+    const event = makeEvent("grep", { pattern: "TODO", path: "/outside/src" });
+    const summary = describeToolCall(event, "read", "/outside/src");
+    expect(summary).toBe("grep TODO in /outside/src");
+  });
+
+  it("falls back to '<operation> <path>' for other guarded tools", () => {
+    const path = "/outside/file.txt";
+    expect(describeToolCall(makeReadEvent(path), "read", path)).toBe(`read ${path}`);
+    expect(describeToolCall(makeWriteEvent(path), "write", path)).toBe(`write ${path}`);
+  });
+
+  it("names the path for 'edit'", () => {
+    const path = "/outside/app.ts";
+    const event = makeEvent("edit", { path, edits: [] });
+    expect(describeToolCall(event, "write", path)).toBe(`edit ${path}`);
+  });
+
+  it("names the path for 'ls'", () => {
+    const path = "/outside/dir";
+    const event = makeEvent("ls", { path });
+    expect(describeToolCall(event, "read", path)).toBe(`ls ${path}`);
+  });
+
+  it("names the path for 'delete'", () => {
+    const path = "/outside/file.txt";
+    const event = makeEvent("delete", { path });
+    expect(describeToolCall(event, "write", path)).toBe(`delete ${path}`);
+  });
+
+  it("names both source and destination for 'move', regardless of which path triggered the prompt", () => {
+    const source = "/outside/old-name.txt";
+    const destination = "/outside/new-name.txt";
+    const event = makeEvent("move", { source, destination });
+    expect(describeToolCall(event, "write", source)).toBe(`move ${source} to ${destination}`);
+    expect(describeToolCall(event, "write", destination)).toBe(`move ${source} to ${destination}`);
+  });
+});
+
 describe("getArgumentCompletions", () => {
   it("offers read/write after 'allow '", () => {
     const result = getArgumentCompletions("allow ");
@@ -265,6 +312,174 @@ describe("promptAccess herdr reporting", () => {
     await promptAccess(events, ctx, "read", "read", path, path, new GrantStore());
 
     expect(events.emit).not.toHaveBeenCalled();
+  });
+
+  it("shows the provided summary (not generic '<operation> <path>') in the prompt and herdr label", async () => {
+    const events = { emit: vi.fn() };
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string) => (message.startsWith("Access") ? "Approve" : "Once")),
+      },
+    };
+    const summary = "find **/project.assets.json in ~/orca";
+
+    await promptAccess(events, ctx, "find", "read", "~/orca", "/home/user/orca", new GrantStore(), summary);
+
+    expect(events.emit).toHaveBeenNthCalledWith(1, "herdr:blocked", {
+      active: true,
+      label: `Ward approval: ${summary}`,
+    });
+    expect(ctx.ui.select).toHaveBeenNthCalledWith(1, `Access outside project root:\n\n  ${summary}`, [
+      "Deny",
+      "Approve",
+    ]);
+  });
+
+  let scopeTempDir: string;
+
+  afterEach(async () => {
+    if (scopeTempDir) await rm(scopeTempDir, { recursive: true, force: true });
+  });
+
+  async function makeScopeDirs() {
+    const base = join(tmpdir(), `pi-ward-prompt-scope-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(base, { recursive: true });
+    scopeTempDir = base;
+    return base;
+  }
+
+  it("offers directory-only scope options and grants recursively for a directory target", async () => {
+    const dir = await makeScopeDirs();
+    const events = { emit: vi.fn() };
+    const grants = new GrantStore();
+    let capturedOptions: string[] | undefined;
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string, options?: string[]) => {
+          if (message.startsWith("Approve scope")) capturedOptions = options;
+          return message.startsWith("Access") ? "Approve" : `Allow ${dir} for session`;
+        }),
+      },
+    };
+
+    await promptAccess(events, ctx, "read", "read", dir, dir, grants);
+
+    expect(capturedOptions).toEqual(["Once", `Allow ${dir} for session`]);
+    expect(grants.listAllows()).toEqual([{ path: dir, operation: "read", directory: true }]);
+
+    const nested = join(dir, "child.txt");
+    expect(grants.isAllowed(nested, "read")).toBe(true);
+  });
+
+  it("offers file-scope options including parent directory for a file target", async () => {
+    const dir = await makeScopeDirs();
+    const file = join(dir, "secret.txt");
+    await writeFile(file, "x");
+    const events = { emit: vi.fn() };
+    const grants = new GrantStore();
+    let capturedOptions: string[] | undefined;
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string, options?: string[]) => {
+          if (message.startsWith("Approve scope")) capturedOptions = options;
+          return message.startsWith("Access") ? "Approve" : `Allow ${file} for session`;
+        }),
+      },
+    };
+
+    await promptAccess(events, ctx, "read", "read", file, file, grants);
+
+    expect(capturedOptions).toEqual(["Once", `Allow ${file} for session`, `Allow ${dir} for session`]);
+    expect(grants.listAllows()).toEqual([{ path: file, operation: "read", directory: false }]);
+
+    // A file-only grant must not cover a sibling in the same directory.
+    const sibling = join(dir, "other.txt");
+    expect(grants.isAllowed(sibling, "read")).toBe(false);
+  });
+
+  it("grants the parent directory recursively when the parent-directory scope option is selected", async () => {
+    const dir = await makeScopeDirs();
+    const file = join(dir, "secret.txt");
+    await writeFile(file, "x");
+    const events = { emit: vi.fn() };
+    const grants = new GrantStore();
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string) =>
+          message.startsWith("Access") ? "Approve" : `Allow ${dir} for session`,
+        ),
+      },
+    };
+
+    await promptAccess(events, ctx, "read", "read", file, file, grants);
+
+    expect(grants.listAllows()).toEqual([{ path: dir, operation: "read", directory: true }]);
+
+    const sibling = join(dir, "other.txt");
+    expect(grants.isAllowed(sibling, "read")).toBe(true);
+  });
+
+  it("names the resolved (canonical) path in scope options even when the raw input path differs (e.g. via a symlink)", async () => {
+    const dir = await makeScopeDirs();
+    const realDir = join(dir, "real");
+    await mkdir(realDir, { recursive: true });
+    const file = join(realDir, "secret.txt");
+    await writeFile(file, "x");
+    const linkDir = join(dir, "link");
+    await symlink(realDir, linkDir);
+    const rawInputPath = join(linkDir, "secret.txt");
+    const resolvedPath = await realpath(file);
+
+    expect(rawInputPath).not.toBe(resolvedPath);
+
+    const events = { emit: vi.fn() };
+    const grants = new GrantStore();
+    let capturedOptions: string[] | undefined;
+    const ctx = {
+      hasUI: true,
+      ui: {
+        select: vi.fn(async (message: string, options?: string[]) => {
+          if (message.startsWith("Approve scope")) capturedOptions = options;
+          return message.startsWith("Access") ? "Approve" : "Once";
+        }),
+      },
+    };
+
+    await promptAccess(events, ctx, "read", "read", rawInputPath, resolvedPath, grants);
+
+    expect(capturedOptions).toEqual([
+      "Once",
+      `Allow ${resolvedPath} for session`,
+      `Allow ${dirname(resolvedPath)} for session`,
+    ]);
+    expect(capturedOptions?.some((opt) => opt.includes(rawInputPath))).toBe(false);
+  });
+
+  it("stores no grant when 'Once' is selected, for both directory and file targets", async () => {
+    const dir = await makeScopeDirs();
+    const file = join(dir, "secret.txt");
+    await writeFile(file, "x");
+    const events = { emit: vi.fn() };
+
+    const dirGrants = new GrantStore();
+    const dirCtx = {
+      hasUI: true,
+      ui: { select: vi.fn(async (message: string) => (message.startsWith("Access") ? "Approve" : "Once")) },
+    };
+    await promptAccess(events, dirCtx, "read", "read", dir, dir, dirGrants);
+    expect(dirGrants.listAllows()).toEqual([]);
+
+    const fileGrants = new GrantStore();
+    const fileCtx = {
+      hasUI: true,
+      ui: { select: vi.fn(async (message: string) => (message.startsWith("Access") ? "Approve" : "Once")) },
+    };
+    await promptAccess(events, fileCtx, "read", "read", file, file, fileGrants);
+    expect(fileGrants.listAllows()).toEqual([]);
   });
 });
 
@@ -345,6 +560,46 @@ describe("handleToolCall", () => {
 
     expect(result).toBeUndefined();
     expect(ctx.ui.select).toHaveBeenCalled();
+  });
+
+  it("shows the find pattern and search path in the access prompt (not generic 'read <path>')", async () => {
+    const dir = outsideDir;
+    const ctx = makeCtx(async (msg) => (msg.startsWith("Access") ? "Approve" : "Once"));
+    const grants = new GrantStore();
+    const findEvent = makeEvent("find", { pattern: "**/project.assets.json", path: dir });
+
+    const result = await handleToolCall(
+      findEvent,
+      ctx,
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: undefined }),
+    );
+
+    expect(result).toBeUndefined();
+    expect(ctx.ui.select).toHaveBeenNthCalledWith(
+      1,
+      `Access outside project root:\n\n  find **/project.assets.json in ${dir}`,
+      ["Deny", "Approve"],
+    );
+  });
+
+  it("shows the grep pattern and search path in the access prompt (not generic 'read <path>')", async () => {
+    const dir = outsideDir;
+    const ctx = makeCtx(async (msg) => (msg.startsWith("Access") ? "Approve" : "Once"));
+    const grants = new GrantStore();
+
+    const result = await handleToolCall(
+      makeGrepEvent(dir),
+      ctx,
+      events,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: undefined }),
+    );
+
+    expect(result).toBeUndefined();
+    expect(ctx.ui.select).toHaveBeenNthCalledWith(1, `Access outside project root:\n\n  grep foo in ${dir}`, [
+      "Deny",
+      "Approve",
+    ]);
   });
 
   it("does not consult the prompt for a no-prompt state (falls through to UI prompting)", async () => {

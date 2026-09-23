@@ -133,6 +133,34 @@ export function extractAccess(
 /** Genuine (non-extension-originated) input sources that qualify as prompt approval context. */
 const GENUINE_INPUT_SOURCES = new Set(["interactive", "rpc"]);
 
+/**
+ * Build a concise, tool-accurate summary of a guarded call for display in
+ * the access-approval UI and the herdr blocked-status label. This is
+ * display-only: it never feeds back into authorization checks or grants,
+ * which continue to operate solely on `operation` and the resolved path.
+ */
+export function describeToolCall(event: ToolCallEvent, operation: Operation, inputPath: string): string {
+  if (isToolCallEventType("find", event)) {
+    return `find ${event.input.pattern} in ${inputPath}`;
+  }
+  if (isToolCallEventType("grep", event)) {
+    return `grep ${event.input.pattern} in ${inputPath}`;
+  }
+  if (isToolCallEventType("ls", event)) {
+    return `ls ${inputPath}`;
+  }
+  if (isToolCallEventType("edit", event)) {
+    return `edit ${inputPath}`;
+  }
+  if (isToolCallEventType<"delete", { path: string }>("delete", event)) {
+    return `delete ${inputPath}`;
+  }
+  if (isToolCallEventType<"move", { source: string; destination: string }>("move", event)) {
+    return `move ${event.input.source} to ${event.input.destination}`;
+  }
+  return `${operation} ${inputPath}`;
+}
+
 export async function promptAccess(
   events: { emit(channel: string, data: unknown): void },
   ctx: { hasUI: boolean; ui: { select(msg: string, options: string[]): Promise<string | undefined> } },
@@ -141,6 +169,7 @@ export async function promptAccess(
   inputPath: string,
   resolvedPath: string,
   grants: GrantStore,
+  summary: string = `${operation} ${inputPath}`,
 ): Promise<{ block: true; reason: string } | undefined> {
   if (!ctx.hasUI) {
     return {
@@ -149,12 +178,9 @@ export async function promptAccess(
     };
   }
 
-  events.emit("herdr:blocked", { active: true, label: `Ward approval: ${operation} ${inputPath}` });
+  events.emit("herdr:blocked", { active: true, label: `Ward approval: ${summary}` });
   try {
-    const action = await ctx.ui.select(`Access outside project root:\n\n  ${operation} ${inputPath}`, [
-      "Deny",
-      "Approve",
-    ]);
+    const action = await ctx.ui.select(`Access outside project root:\n\n  ${summary}`, ["Deny", "Approve"]);
 
     if (!action) {
       return { block: true, reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: dismissed` };
@@ -169,10 +195,24 @@ export async function promptAccess(
       return { block: true, reason: `[pi-ward] Blocked ${toolName} (${operation}) on ${inputPath}: denied by user` };
     }
 
-    const scope = await ctx.ui.select("Approve scope:", ["Once", "For session"]);
-    if (scope === "For session") {
-      const dir = await isDirectory(resolvedPath);
+    const dir = await isDirectory(resolvedPath);
+    const canonicalParent = dirname(resolvedPath);
+    // Name the canonical resolved path (and parent) explicitly in each scope
+    // label, so a raw/symlinked input path that differs from `resolvedPath`
+    // is visible to the user before the broader session grant is recorded.
+    const scopeOptions = dir
+      ? ["Once", `Allow ${resolvedPath} for session`]
+      : ["Once", `Allow ${resolvedPath} for session`, `Allow ${canonicalParent} for session`];
+    const scope = await ctx.ui.select("Approve scope:", scopeOptions);
+    // Match by index into the exact option list just offered, not by
+    // reconstructing/parsing the label string, since the resolved path is
+    // interpolated into it.
+    const scopeIndex = scope === undefined ? -1 : scopeOptions.indexOf(scope);
+
+    if (scopeIndex === 1) {
       grants.addAllow(resolvedPath, operation, dir);
+    } else if (scopeIndex === 2) {
+      grants.addAllow(canonicalParent, operation, true);
     }
 
     return undefined;
@@ -251,6 +291,7 @@ export async function handleToolCall(
         inputPath,
         result.resolvedPath,
         deps.grants,
+        describeToolCall(event, operation, inputPath),
       );
       if (blocked) return blocked;
     }

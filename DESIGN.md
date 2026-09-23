@@ -265,12 +265,19 @@ The recursive-read output filter (see above) is inherently post-hoc: it `stat`-c
 
 When a path is denied by baseline policy (outside project root, no explicit deny rule), ward prompts the user for approval via the TUI before blocking. This allows controlled access to external paths without pre-configuring rules.
 
+The prompt summary shown to the user is tool-accurate rather than a generic `read/write <path>` line: `find`/`grep` show the search pattern and the search root (e.g. `grep needle in /some/dir`), `move` shows both source and destination (e.g. `move /a to /b`), and other guarded tools identify their action and target path directly.
+
 **Prompt flow (two steps):**
 
 When a baseline deny is triggered with a UI available, ward presents two sequential prompts:
 
 1. **Action** — `"Deny"` / `"Approve"` (deny is first, fail-closed default)
-2. **Scope** — `"Once"` / `"For session"`
+2. **Scope** — options depend on the action and on whether the resolved target is a directory or a file:
+   - Deny: `"Once"` / `"For session"`, regardless of target type.
+   - Approve, target is a directory: `"Once"` / `"Allow <canonical resolved directory> for session"`.
+   - Approve, target is a file: `"Once"` / `"Allow <canonical resolved file> for session"` / `"Allow <canonical parent directory> for session"`.
+
+Each session-scope option's label spells out the canonical (symlink-resolved) path it would grant, rather than a generic "For session" choice — this surfaces any difference between the raw input path and its resolved target before the broader grant is recorded, so the user isn't blindly widening access to a path they didn't expect.
 
 Combining these:
 
@@ -279,7 +286,9 @@ Combining these:
 | Deny | Once | Block this call. Ask again on next attempt. |
 | Deny | For session | Block and remember — suppress future prompts for this path. |
 | Approve | Once | Allow this single call. No state stored. |
-| Approve | For session | Allow and remember — auto-approve future access to this path. |
+| Approve | Allow `<resolved file>` for session | Grant the exact file only — session-scoped, non-recursive. |
+| Approve | Allow `<resolved directory>` for session | Grant the resolved directory and everything beneath it, recursively, for the session — offered when the target itself is a directory. |
+| Approve | Allow `<parent directory>` for session | Grant the resolved file's parent directory and everything beneath it, recursively, for the session — offered as a broader alternative when the target is a file. |
 
 If the user dismisses either prompt (e.g., Escape), the access is denied once without storing state.
 
