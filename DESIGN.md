@@ -268,8 +268,9 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 5. Evaluate global rules first-match-wins → allow or non-grantable deny.
 6. If baseline would deny (path outside project root):
    a. Check session grants → if match, allow silently.
-   b. For reads only, check prompt-derived approval → if match, allow for the current turn.
-   c. Prompt user → apply their choice.
+   b. If `--ward-no-prompts` is set, block without UI or prompt-derived approval.
+   c. Otherwise, for reads only, check prompt-derived approval → if match, allow for the current turn.
+   d. Otherwise, prompt user → apply their choice.
 7. If baseline would allow (inside project root) → allow.
 
 **Key constraints:**
@@ -280,6 +281,7 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 - Directory grants (`directory: true`) cover the path and everything under it.
 - Operation semantics mirror rules: a write grant covers read+write; a read deny blocks both.
 - When no UI is available (non-interactive mode), baseline denies remain blocked, except where prompt-derived read approval applies (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants) below) — that check needs no UI, only a real user turn.
+- The boolean pi CLI flag `--ward-no-prompts` (default off) is read at the `tool_call` hook, not at extension initialization. When on, grantable baseline denies block before either implicit approval or the interactive UI (and before creating grep call-scoped approval context); `checkPath` still honors hard denies, global rule allows, session grants, and persistent project grants.
 
 ### Prompt-Derived Approval (Implicit Turn-Scoped Grants)
 
@@ -362,7 +364,7 @@ The interactive approval flow prompts per-file. The `/ward` slash command lets t
 3. Session deny
 4. Persistent project grant
 5. Global rule evaluation
-6. On baseline deny: session grant, then prompt-derived approval, then interactive prompt
+6. On baseline deny: session grant, then if `--ward-no-prompts` is set block; otherwise prompt-derived approval, then interactive prompt
 7. Baseline allow
 
 **`/ward list` output:**

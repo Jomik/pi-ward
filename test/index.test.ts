@@ -719,6 +719,97 @@ describe("handleToolCall", () => {
     });
   });
 
+  it.each([true, false])("blocks grantable external reads without prompts when disabled (hasUI=%s)", async (hasUI) => {
+    const file = join(outsideDir, "secret.txt");
+    await writeFile(file, "secret");
+    const grants = new GrantStore();
+    const ctx = hasUI ? makeCtx(async () => "Approve") : makeCtx();
+    const emitted = { emit: vi.fn() };
+
+    const result = await handleToolCall(
+      makeReadEvent(file),
+      ctx,
+      emitted,
+      baseDeps(testProjectRoot, tempDir, grants, { latestPrompt: `read @${file}`, disablePrompts: true }),
+    );
+
+    expect(result).toEqual({ block: true, reason: expect.stringContaining("outside project root") });
+    expect(ctx.ui.select).not.toHaveBeenCalled();
+    expect(emitted.emit).not.toHaveBeenCalled();
+    expect(grants.listAllows()).toEqual([]);
+  });
+
+  it("blocks grantable external writes without opening the approval UI", async () => {
+    const file = join(outsideDir, "output.txt");
+    const ctx = makeCtx(async (msg) => (msg.startsWith("Access") ? "Approve" : "Once"));
+    const emitted = { emit: vi.fn() };
+
+    const result = await handleToolCall(
+      makeWriteEvent(file),
+      ctx,
+      emitted,
+      baseDeps(testProjectRoot, tempDir, new GrantStore(), { disablePrompts: true }),
+    );
+
+    expect(result).toEqual({ block: true, reason: expect.stringContaining("outside project root") });
+    expect(ctx.ui.select).not.toHaveBeenCalled();
+    expect(emitted.emit).not.toHaveBeenCalled();
+  });
+
+  it("blocks grep of an @-marked external directory without recording a call context", async () => {
+    const dir = join(outsideDir, "docs");
+    await mkdir(dir);
+    const callContexts = new Map<string, string>();
+    const ctx = makeCtx(async () => "Approve");
+    const emitted = { emit: vi.fn() };
+
+    const result = await handleToolCall(
+      makeGrepEvent(dir, "disabled-grep"),
+      ctx,
+      emitted,
+      baseDeps(testProjectRoot, tempDir, new GrantStore(), {
+        latestPrompt: `look in @${dir}`,
+        callContexts,
+        disablePrompts: true,
+      }),
+    );
+
+    expect(result?.block).toBe(true);
+    expect(callContexts.size).toBe(0);
+    expect(ctx.ui.select).not.toHaveBeenCalled();
+    expect(emitted.emit).not.toHaveBeenCalled();
+  });
+
+  it("still honors explicit allows, session/project grants, and hard denies when prompts are disabled", async () => {
+    const file = join(outsideDir, "allowed.txt");
+    await writeFile(file, "data");
+    const grants = new GrantStore();
+    const ctx = makeCtx(async () => "Approve");
+    const emitted = { emit: vi.fn() };
+    const deps = baseDeps(testProjectRoot, tempDir, grants, { disablePrompts: true });
+    const allowRule = {
+      pattern: parsePattern(file),
+      rawPattern: file,
+      operations: "read" as const,
+      effect: "allow" as const,
+      configDir: tempDir,
+      homeDir: tempDir,
+    };
+    expect(await handleToolCall(makeReadEvent(file), ctx, emitted, { ...deps, rules: [allowRule] })).toBeUndefined();
+    grants.addAllow(file, "read", false);
+    expect(await handleToolCall(makeReadEvent(file), ctx, emitted, deps)).toBeUndefined();
+    expect(
+      await handleToolCall(makeReadEvent(file), ctx, emitted, {
+        ...deps,
+        projectGrants: [{ resolvedPath: file, operations: "read", directory: false }],
+      }),
+    ).toBeUndefined();
+    grants.addDeny(file, "read", false);
+    expect(await handleToolCall(makeReadEvent(file), ctx, emitted, deps)).toMatchObject({ block: true });
+    expect(ctx.ui.select).not.toHaveBeenCalled();
+    expect(emitted.emit).not.toHaveBeenCalled();
+  });
+
   // ---------------------------------------------------------------------------
   // call-scoped recursive directory context (callContexts)
   // ---------------------------------------------------------------------------
@@ -803,6 +894,55 @@ describe("handleToolCall", () => {
 
     expect(callContexts.get("call-a")).toBe(resolvedA);
     expect(callContexts.get("call-b")).toBe(resolvedB);
+  });
+});
+
+describe("factory ward-no-prompts flag", () => {
+  it("registers a default-off flag and reads its current value at tool_call, even after RPC input", async () => {
+    const { tempDir, testProjectRoot, outsideDir } = await makeTestDirs("pi-ward-flag-test");
+    const file = join(outsideDir, "notes.txt");
+    await writeFile(file, "hello");
+    mockGetAgentDir.mockReturnValue(join(tempDir, "agent"));
+    const handlers = new Map<string, (event: never, ctx: never) => Promise<unknown>>();
+    let disabled = false;
+    const mockPi = {
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      registerFlag: vi.fn(),
+      getFlag: vi.fn(() => disabled),
+      on: vi.fn((name: string, handler: (event: never, ctx: never) => Promise<unknown>) => {
+        handlers.set(name, handler);
+      }),
+      events: { emit: vi.fn() },
+    };
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(testProjectRoot);
+      // biome-ignore lint/suspicious/noExplicitAny: minimal structural mock of ExtensionFactory's `pi` param
+      await factory(mockPi as any);
+      expect(mockPi.registerFlag).toHaveBeenCalledWith("ward-no-prompts", {
+        description: expect.any(String),
+        type: "boolean",
+        default: false,
+      });
+      expect(mockPi.getFlag).not.toHaveBeenCalled();
+      const onInput = handlers.get("input");
+      const onToolCall = handlers.get("tool_call");
+      if (!onInput || !onToolCall) throw new Error("missing input/tool_call hook");
+      await onInput({ source: "rpc", text: `read @${file}` } as never, {} as never);
+      const ctx = makeCtx(async (msg) => (msg.startsWith("Access") ? "Approve" : "Once"));
+      const call = makeReadEvent(file);
+      disabled = true;
+      expect(await onToolCall(call as never, ctx as never)).toMatchObject({ block: true });
+      expect(ctx.ui.select).not.toHaveBeenCalled();
+      expect(mockPi.events.emit).not.toHaveBeenCalled();
+      disabled = false;
+      expect(await onToolCall(call as never, ctx as never)).toBeUndefined();
+      expect(mockPi.getFlag).toHaveBeenCalledTimes(2);
+    } finally {
+      process.chdir(originalCwd);
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1170,6 +1310,7 @@ describe("ward command autocomplete", () => {
       let wardConfig: CommandConfig | undefined;
       const mockPi = {
         registerTool: vi.fn(),
+        registerFlag: vi.fn(),
         registerCommand: vi.fn((name: string, config: CommandConfig) => {
           if (name === "ward") wardConfig = config;
         }),
@@ -1249,9 +1390,11 @@ describe("factory fail-closed startup", () => {
       const registerTool = vi.fn();
       const mockPi = {
         registerTool,
+        registerFlag: vi.fn(),
         registerCommand: vi.fn((name: string, config: WardConfig) => {
           if (name === "ward") wardConfig = config;
         }),
+        getFlag: vi.fn(() => false),
         on: vi.fn((event: string, handler: ToolCallHandler) => {
           handlers.set(event, handler);
         }),
