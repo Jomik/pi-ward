@@ -264,10 +264,10 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 1. Path resolution (symlink resolve, broken symlink check).
 2. Self-protection check.
 3. Check session denies → hard block.
-4. Check the active project's persistent grants → allow on match. This is the explicit exception layer and may override an ordinary global deny.
-5. Evaluate global rules first-match-wins → allow or non-grantable deny.
+4. Check explicit session grants (`/ward allow`) and the active project's persistent grants → allow on match. Both may override an ordinary global deny.
+5. Evaluate global rules first-match-wins → allow or deny. An ungranted global deny blocks without an interactive prompt or prompt-derived approval; status says `explicit /ward allow required (no interactive prompt)`.
 6. If baseline would deny (path outside project root):
-   a. Check session grants → if match, allow silently.
+   a. Check prompt-created session grants → if match, allow silently.
    b. If `--ward-no-prompts` is set, block without UI or prompt-derived approval.
    c. Otherwise, for reads only, check prompt-derived approval → if match, allow for the current turn.
    d. Otherwise, prompt user → apply their choice.
@@ -276,18 +276,18 @@ If the user dismisses either prompt (e.g., Escape), the access is denied once wi
 **Key constraints:**
 
 - Interactive and `/ward` session grants are in-memory only. Persistent project grants are separate and managed only through `/ward project`.
-- Session allows cannot override explicit global deny rules; persistent project grants can.
+- Explicit `/ward allow` session grants and persistent project grants can override ordinary global denies; interactive approval cannot. Call-scoped approvals remain baseline-only.
 - Session denies are always stored and checked first. They override global rules, persistent project grants, session grants, baseline allows, and call-scoped approvals.
 - Directory grants (`directory: true`) cover the path and everything under it.
 - Operation semantics mirror rules: a write grant covers read+write; a read deny blocks both.
 - When no UI is available (non-interactive mode), baseline denies remain blocked, except where prompt-derived read approval applies (see [Prompt-Derived Approval](#prompt-derived-approval-implicit-turn-scoped-grants) below) — that check needs no UI, only a real user turn.
-- The boolean pi CLI flag `--ward-no-prompts` (default off) is read at the `tool_call` hook, not at extension initialization. When on, grantable baseline denies block before either implicit approval or the interactive UI (and before creating grep call-scoped approval context); `checkPath` still honors hard denies, global rule allows, session grants, and persistent project grants.
+- The boolean pi CLI flag `--ward-no-prompts` (default off) is read at the `tool_call` hook, not at extension initialization. When on, grantable baseline denies block before either implicit approval or the interactive UI (and before creating grep call-scoped approval context); `checkPath` still honors hard denies, global rule allows, explicit session grants, and persistent project grants.
 
 ### Prompt-Derived Approval (Implicit Turn-Scoped Grants)
 
 Interactive approval and `/ward` both require the user to act out-of-band from their request. But often the user's own message already names the path they want read (e.g. "check @/tmp/notes/todo.md") — asking them to also click through a prompt is redundant. Prompt-derived approval treats a concrete matching path reference in the user's own message as consent for that reference, scoped to the turn in which it was made.
 
-**Trigger:** only reached for a read that is otherwise grantable — i.e. baseline-denied (outside project root) with no persistent project grant, explicit deny rule, or resolution failure. It sits between session grants and the interactive prompt in the evaluation order. Self-protected paths are rejected before this check.
+**Trigger:** only reached for a read that is otherwise grantable — i.e. baseline-denied (outside project root) with no persistent project grant, explicit deny rule, or resolution failure. It sits between the baseline deny and the interactive prompt in the evaluation order. Self-protected paths are rejected before this check.
 
 **Remembered input, not a turn model:** the extension keeps a single in-memory value — the text of the latest genuine user input seen this runtime. "Genuine" means the input arrived via an interactive or RPC source; extension-originated input (e.g. injected by a command or tool) is never genuine — it neither becomes the remembered value nor clears it. Every subsequent genuine input replaces the previous one, so the check always compares against the single most recent genuine message, whatever tool calls have happened since. There is no separate notion of conversation branch or turn boundary tracked beyond this: "current turn" below just means "since the last genuine input was recorded and until the next one arrives".
 
@@ -331,7 +331,7 @@ Because matching compares each candidate's own canonical path against the tool's
 
 ### `/ward` Command (Proactive Session Grants)
 
-The interactive approval flow prompts per-file. The `/ward` slash command lets the user proactively grant or deny access for the current session — pre-populating the same in-memory grants that interactive approval creates.
+The interactive approval flow prompts per-file. The `/ward` slash command lets the user proactively grant or deny access for the current session. Unlike prompt-created grants, explicit `/ward allow` grants can override ordinary global denies.
 
 **Commands:**
 
@@ -347,7 +347,7 @@ The interactive approval flow prompts per-file. The `/ward` slash command lets t
 
 **Semantics:**
 
-- Allows: cannot override explicit deny rules. Only baseline denies are grantable.
+- Explicit `/ward allow` grants may override ordinary global deny rules as well as baseline denies, but not session denies, self-protection, or path-resolution failure. Prompt-created session grants and call-scoped approvals remain baseline-only.
 - Denies: always stored, regardless of what a rule or baseline would otherwise decide — including paths inside the project root and paths an explicit rule would allow. A session deny is a hard temporary block for the remainder of the process: it overrides rule allows, baseline allows, session grants, and call-scoped approvals.
 - Directory patterns: an existing directory is detected and granted recursively even without a trailing `/`; a trailing `/` requests directory scope for a path that does not yet exist, covering the path and everything underneath once it does.
 - Operation semantics: `write` implies read+write for allow; for deny, `read` (default) blocks read+write, `write` blocks writes only. Omitting the operation defaults to `read`.
@@ -362,9 +362,9 @@ The interactive approval flow prompts per-file. The `/ward` slash command lets t
 1. Path resolution
 2. Self-protection check
 3. Session deny
-4. Persistent project grant
-5. Global rule evaluation
-6. On baseline deny: session grant, then if `--ward-no-prompts` is set block; otherwise prompt-derived approval, then interactive prompt
+4. Explicit session grant (`/ward allow`) or persistent project grant
+5. Global rule evaluation; an ungranted global deny blocks without prompting
+6. On baseline deny: prompt-created session grant, then if `--ward-no-prompts` is set block; otherwise prompt-derived approval, then interactive prompt
 7. Baseline allow
 
 **`/ward list` output:**
@@ -439,7 +439,7 @@ Project grants
 4. The sole declarative policy file is the trusted global `~/.pi/agent/ward.json`; projects cannot supply policy.
 5. Persistent project grants are allow-only, stored under `~/.pi/agent/ward/`, and selected by a random local project ID.
 6. A project ID carries no authoring authority: it can select only the already-existing trusted grants file with that exact ID.
-7. Persistent project grants may override ordinary global denies, but never resolution failures, self-protection, or session denies.
+7. Explicit `/ward allow` session grants and persistent project grants may override ordinary global denies, but never resolution failures, self-protection, or session denies; prompt-created and call-scoped approvals remain baseline-only.
 8. Global policy and grants files are write-protected from guarded tools. `.pi/ward.id` is protected from both reads and writes, including before creation; canonical identity checks prevent alias bypasses.
 9. Rules and grants are pure data — no executable logic.
 10. Any active policy, identity, or grants-file error fails closed.
