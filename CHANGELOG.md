@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0](https://github.com/Jomik/pi-ward/compare/v0.3.0...v0.4.0) (2026-09-25)
+
+
+### Features
+
+* add no-prompts flag for worker sessions ([#25](https://github.com/Jomik/pi-ward/issues/25)) ([1f261bb](https://github.com/Jomik/pi-ward/commit/1f261bbc8bfb3f4fa6a34f19b2bbaaee9b6cb4a7))
+* add persistent project grants ([#24](https://github.com/Jomik/pi-ward/issues/24)) ([e25b2ce](https://github.com/Jomik/pi-ward/commit/e25b2ce74bd39299416685d7c2afd3fa61d8e664))
+* add ward project commands ([4d2f223](https://github.com/Jomik/pi-ward/commit/4d2f2236d6b75f6bbaaad02ba2146b7fe6c37cb1))
+* allow reads beneath prompt-approved directories ([#21](https://github.com/Jomik/pi-ward/issues/21)) ([514426d](https://github.com/Jomik/pi-ward/commit/514426d9b4b41b049e606bb524aff528de37585c))
+* allow temporary grants through global deny rules ([#26](https://github.com/Jomik/pi-ward/issues/26)) ([d32010f](https://github.com/Jomik/pi-ward/commit/d32010fe926e32f40c19327060d7a41f33698176))
+* approve prompt-referenced external reads ([#19](https://github.com/Jomik/pi-ward/issues/19)) ([704600b](https://github.com/Jomik/pi-ward/commit/704600b0f281c0a36c23e7072ad770ec8081127a))
+* improve access approval prompts ([#23](https://github.com/Jomik/pi-ward/issues/23)) ([e7ef4d6](https://github.com/Jomik/pi-ward/commit/e7ef4d6e88a47daf240265f0f7e049c17b13f9b2))
+* persist project-scoped policy rules ([d0f4f61](https://github.com/Jomik/pi-ward/commit/d0f4f61bd2ce16f57eccafb22b99e6c474c962d3))
+* support scoped session denies for all paths ([#22](https://github.com/Jomik/pi-ward/issues/22)) ([8334b4c](https://github.com/Jomik/pi-ward/commit/8334b4c7d28193b665ac5b69d1a3835c0fe86b7a))
+* support unanchored path patterns ([2e4d12f](https://github.com/Jomik/pi-ward/commit/2e4d12f6472df5a06cc3085954ba9497d84cafd7))
+
+
+### Bug Fixes
+
+* harden ward config self-protection ([6790f3f](https://github.com/Jomik/pi-ward/commit/6790f3f7631187b8974a01307ef13f81bea38efc))
+* use safe select prompt for project policy ([2361494](https://github.com/Jomik/pi-ward/commit/23614940664d79306b2114a189e74941356ac621))
+
 ## [0.3.0](https://github.com/Jomik/pi-ward/compare/v0.2.0...v0.3.0) (2026-08-30)
 
 
