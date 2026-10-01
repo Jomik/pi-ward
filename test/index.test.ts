@@ -1041,8 +1041,9 @@ describe("handleGrepResult", () => {
     );
 
     expect(result).toBeDefined();
-    expect(result?.content[0]).toMatchObject({ type: "text" });
-    const text = (result?.content[0] as { text: string }).text;
+    if (!result) throw new Error("expected filtered grep result");
+    expect(result.content[0]).toMatchObject({ type: "text" });
+    const text = (result.content[0] as { text: string }).text;
     expect(text).not.toContain("SECRET=1");
   });
 
@@ -1054,7 +1055,8 @@ describe("handleGrepResult", () => {
     const result = await handleGrepResult(event, grepResultDeps(testProjectRoot, new GrantStore(), callContexts));
 
     expect(result).toBeDefined();
-    const text = (result?.content[0] as { text: string }).text;
+    if (!result) throw new Error("expected filtered grep result");
+    const text = (result.content[0] as { text: string }).text;
     expect(text).not.toContain("hello");
   });
 
@@ -1107,7 +1109,8 @@ describe("handleGrepResult", () => {
     const result = await handleGrepResult(event, grepResultDeps(testProjectRoot, new GrantStore(), callContexts));
 
     expect(result).toBeDefined();
-    const text = (result?.content[0] as { text: string }).text;
+    if (!result) throw new Error("expected filtered grep result");
+    const text = (result.content[0] as { text: string }).text;
     expect(text).not.toContain("hello");
   });
 });
